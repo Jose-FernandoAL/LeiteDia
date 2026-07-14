@@ -1,6 +1,8 @@
 package coop.macambira.leitedia
 
 import android.os.Bundle
+import android.content.Intent
+import android.net.Uri
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -32,12 +34,14 @@ class MainActivity : ComponentActivity() {
 private fun LeiteDiaApp(modifier: Modifier) {
     val client = remember { SupabaseClient() }
     var profile by remember { mutableStateOf<UserProfile?>(null) }
+    var license by remember { mutableStateOf<LicenseStatus?>(null) }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     if (profile == null) LoginScreen(modifier, loading, error) { id, password ->
         loading = true; error = null
-        Thread { runCatching { client.login(id, password) }.onSuccess { profile = it }.onFailure { error = it.message }; loading = false }.start()
-    } else if (profile!!.role == "admin") AdminScreen(
+        Thread { runCatching { client.login(id, password) to client.getLicenseStatus() }.onSuccess { profile = it.first; license = it.second }.onFailure { error = it.message }; loading = false }.start()
+    } else if (license?.active == false) TrialExpiredScreen(modifier, license!!, { client.logout(); profile = null; license = null })
+    else if (profile!!.role == "admin") AdminScreen(
         modifier, profile!!,
         loadUsers = { done -> Thread { val r = runCatching { client.listUsers() }; done(r.getOrNull(), r.exceptionOrNull()?.message) }.start() },
         loadEntries = { id, done -> Thread { val r = runCatching { client.listEntries(id) }; done(r.getOrNull(), r.exceptionOrNull()?.message) }.start() },
@@ -142,13 +146,36 @@ private fun UserDialog(title: String, name: String, login: String, password: Str
 
 @Composable
 private fun LoginScreen(modifier: Modifier, loading: Boolean, error: String?, login: (String, String) -> Unit) {
+    val context = LocalContext.current
     var id by remember { mutableStateOf("") }; var password by remember { mutableStateOf("") }
     Column(modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center) {
         Text("LeiteDia", style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold); Text("Cooperativa Macambira", style = MaterialTheme.typography.titleMedium); Spacer(Modifier.height(28.dp))
         OutlinedTextField(id, { id = it }, label = { Text("ID do usuário") }, modifier = Modifier.fillMaxWidth(), singleLine = true); Spacer(Modifier.height(10.dp))
         OutlinedTextField(password, { password = it }, label = { Text("Senha") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(), singleLine = true); Spacer(Modifier.height(18.dp))
         Button(onClick = { login(id, password) }, enabled = !loading && id.isNotBlank() && password.isNotBlank(), modifier = Modifier.fillMaxWidth().height(52.dp)) { Text(if (loading) "Conectando..." else "Entrar") }
-        error?.let { Text(it, color = MaterialTheme.colorScheme.error) }; Spacer(Modifier.height(12.dp)); Text("Versão 1.2", modifier = Modifier.align(Alignment.CenterHorizontally))
+        error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        Spacer(Modifier.height(10.dp))
+        OutlinedButton(onClick = {
+            val text = Uri.encode("Olá! Gostaria de solicitar um acesso de teste de 7 dias ao LeiteDia para minha cooperativa.")
+            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/5587999190815?text=$text")))
+        }, modifier = Modifier.fillMaxWidth()) { Text("Solicitar acesso de teste") }
+        Spacer(Modifier.height(12.dp)); Text("Versão 1.3 • teste gratuito", modifier = Modifier.align(Alignment.CenterHorizontally))
+    }
+}
+
+@Composable
+private fun TrialExpiredScreen(modifier: Modifier, license: LicenseStatus, logout: () -> Unit) {
+    val context = LocalContext.current
+    val message = "Olá! Testei o LeiteDia e gostaria de negociar a liberação da versão completa para minha cooperativa."
+    val whatsapp = "https://wa.me/5587999190815?text=${Uri.encode(message)}"
+    Column(modifier.fillMaxSize().padding(28.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+        Text("Período de teste encerrado", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(14.dp))
+        Text("Seu período gratuito de 7 dias terminou. Para continuar usando o LeiteDia, exportar planilhas e liberar todos os recursos, negocie os valores pelo WhatsApp.")
+        if (license.trialEndsAt.isNotBlank()) { Spacer(Modifier.height(8.dp)); Text("Teste encerrado em: ${license.trialEndsAt.take(10)}") }
+        Spacer(Modifier.height(24.dp))
+        Button(onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(whatsapp))) }, modifier = Modifier.fillMaxWidth().height(54.dp)) { Text("Negociar versão completa") }
+        TextButton(onClick = logout) { Text("Sair da conta") }
     }
 }
 

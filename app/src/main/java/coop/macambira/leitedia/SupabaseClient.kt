@@ -36,6 +36,13 @@ data class MilkEntry(
     val notes: String
 )
 
+data class LicenseStatus(
+    val status: String,
+    val trialEndsAt: String,
+    val daysRemaining: Int,
+    val active: Boolean
+)
+
 class SupabaseClient {
     private val baseUrl = "https://lqrddudfczmmlqqkgnly.supabase.co"
     private val apiKey = "sb_publishable_VD6P1JIYMzr9fl-z0eQGLQ_Q4IhtaCK"
@@ -127,6 +134,20 @@ class SupabaseClient {
                 .put("full_name", fullName.trim())
                 .put("password", password)
                 .put("action", "create")
+        )
+    }
+
+    fun getLicenseStatus(): LicenseStatus {
+        val result = request(
+            path = "/functions/v1/create-cooperative-user",
+            method = "POST",
+            body = JSONObject().put("action", "license-status")
+        )
+        return LicenseStatus(
+            status = result.optString("status", "trial"),
+            trialEndsAt = result.optString("trial_ends_at"),
+            daysRemaining = result.optInt("days_remaining", 0),
+            active = result.optBoolean("active", false)
         )
     }
 

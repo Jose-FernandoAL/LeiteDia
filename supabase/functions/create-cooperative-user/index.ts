@@ -10,10 +10,26 @@ Deno.serve(async (req) => {
     const { data: authData, error: authError } = await caller.auth.getUser();
     if (authError || !authData.user) throw new Error("Sessão inválida");
     const { data: profile } = await admin.from("profiles").select("cooperative_id,role,active").eq("id", authData.user.id).single();
-    if (!profile?.active || profile.role !== "admin") return new Response(JSON.stringify({ message: "Apenas administradores podem gerenciar usuários" }), { status: 403, headers });
-
     const body = await req.json();
     const action = String(body.action ?? "create");
+    if (!profile?.active) return new Response(JSON.stringify({ message: "Usuário desativado" }), { status: 403, headers });
+
+    if (action === "license-status") {
+      let { data: license } = await admin.from("cooperative_licenses").select("status,trial_started_at,trial_days").eq("cooperative_id", profile.cooperative_id).maybeSingle();
+      if (!license) {
+        const { data: createdLicense, error: licenseError } = await admin.from("cooperative_licenses").insert({ cooperative_id: profile.cooperative_id, status: "trial", trial_days: 7 }).select("status,trial_started_at,trial_days").single();
+        if (licenseError) throw licenseError;
+        license = createdLicense;
+      }
+      const started = new Date(license.trial_started_at);
+      const trialEnd = new Date(started.getTime() + Number(license.trial_days) * 86400000);
+      const full = license.status === "full";
+      const remainingMs = trialEnd.getTime() - Date.now();
+      return new Response(JSON.stringify({ status: license.status, trial_ends_at: trialEnd.toISOString(), days_remaining: full ? 9999 : Math.max(0, Math.ceil(remainingMs / 86400000)), active: full || remainingMs > 0 }), { status: 200, headers });
+    }
+
+    if (profile.role !== "admin") return new Response(JSON.stringify({ message: "Apenas administradores podem gerenciar usuários" }), { status: 403, headers });
+
     const loginId = String(body.login_id ?? "").trim().toUpperCase();
     const fullName = String(body.full_name ?? "").trim();
     const password = String(body.password ?? "");
