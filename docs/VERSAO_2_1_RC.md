@@ -43,3 +43,11 @@ A migração cria novas tabelas e políticas sem remover tabelas ou registros ex
 - Zero falhas e zero erros.
 - APK validado com pacote `coop.macambira.leitedia`.
 - As versões 1.7, 1.8, 1.9 e 2.0 RC permanecem preservadas.
+
+## Validação no Supabase — 16/07/2026
+
+- Migração operacional aplicada com sucesso.
+- Acesso administrativo às tabelas de fechamentos, auditoria e backups confirmado.
+- Backup técnico criado e restaurado; a restauração não duplicou dados existentes.
+- Período técnico de `2099-01-01` a `2099-01-02` fechado e reaberto imediatamente.
+- Nenhum período atual ficou fechado e nenhum lançamento real foi alterado durante a validação.
