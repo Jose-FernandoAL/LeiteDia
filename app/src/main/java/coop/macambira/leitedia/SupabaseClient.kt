@@ -109,6 +109,15 @@ class SupabaseClient {
         request("/rest/v1/milk_entries?on_conflict=user_id,client_entry_id", "POST", body, prefer = "resolution=ignore-duplicates,return=minimal")
     }
 
+    fun hasMilkEntry(profile: UserProfile, input: MilkEntryInput): Boolean {
+        val shift = java.net.URLEncoder.encode(input.shift, "UTF-8")
+        val result = requestArray(
+            "/rest/v1/milk_entries?select=id&user_id=eq.${profile.id}&producer_id=eq.${input.producerId}" +
+                "&entry_date=eq.${input.entryDate}&shift=eq.$shift&limit=1"
+        )
+        return result.length() > 0
+    }
+
     fun listProducers(activeOnly: Boolean = false): List<Producer> {
         val filter = if (activeOnly) "&active=eq.true" else ""
         val result = requestArray("/rest/v1/producers?select=id,name,document,phone,community,active$filter&order=name.asc")

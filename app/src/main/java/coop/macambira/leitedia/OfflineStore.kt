@@ -49,6 +49,11 @@ class OfflineStore(context: Context) : SQLiteOpenHelper(context, "leitedia_offli
     fun remove(clientId: String) { writableDatabase.delete("pending_entries", "client_id=?", arrayOf(clientId)) }
     fun pendingCount(userId: String): Int = readableDatabase.rawQuery("select count(*) from pending_entries where user_id=?", arrayOf(userId)).use { if (it.moveToFirst()) it.getInt(0) else 0 }
 
+    fun hasPending(userId: String, input: MilkEntryInput): Boolean = readableDatabase.rawQuery(
+        "select 1 from pending_entries where user_id=? and producer_id=? and entry_date=? and shift=? limit 1",
+        arrayOf(userId, input.producerId.toString(), input.entryDate, input.shift)
+    ).use { it.moveToFirst() }
+
     fun cacheProducers(userId: String, producers: List<Producer>) {
         writableDatabase.beginTransaction()
         try {

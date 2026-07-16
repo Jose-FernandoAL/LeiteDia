@@ -17,6 +17,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import coop.macambira.leitedia.ui.theme.LeiteDiaTheme
 import java.security.SecureRandom
@@ -66,8 +68,15 @@ private fun LeiteDiaApp(modifier: Modifier) {
     ) else MilkEntryScreen(
         modifier, profile!!,
         save = { input, done -> Thread {
-            if (!onlineSession) { offline.queue(profile!!.id, input); done("OFFLINE_SAVED"); return@Thread }
-            val failure = runCatching { client.saveMilkEntry(profile!!, input) }.exceptionOrNull()
+            if (!onlineSession) {
+                if (offline.hasPending(profile!!.id, input)) done("Já existe um lançamento pendente para esse produtor e turno hoje.")
+                else { offline.queue(profile!!.id, input); done("OFFLINE_SAVED") }
+                return@Thread
+            }
+            val failure = runCatching {
+                if (client.hasMilkEntry(profile!!, input)) error("Já existe um lançamento para esse produtor e turno hoje. Corrija pelo histórico, se necessário.")
+                client.saveMilkEntry(profile!!, input)
+            }.exceptionOrNull()
             if (failure == null) done(null)
             else if (failure.isNetworkFailure()) { offline.queue(profile!!.id, input); done("OFFLINE_SAVED") }
             else done(failure.message)
@@ -203,8 +212,8 @@ private fun ProducerDialog(editing: Boolean, name: String, document: String, pho
     AlertDialog(onDismissRequest = { if (!saving) dismiss() }, title = { Text(if (editing) "Gerenciar produtor" else "Novo produtor") },
         text = { Column(Modifier.verticalScroll(rememberScrollState())) {
             OutlinedTextField(name, setName, label = { Text("Nome completo *") }, modifier = Modifier.fillMaxWidth()); Spacer(Modifier.height(6.dp))
-            OutlinedTextField(document, setDocument, label = { Text("CPF ou CNPJ") }, modifier = Modifier.fillMaxWidth()); Spacer(Modifier.height(6.dp))
-            OutlinedTextField(phone, setPhone, label = { Text("Telefone") }, modifier = Modifier.fillMaxWidth()); Spacer(Modifier.height(6.dp))
+            OutlinedTextField(document, setDocument, label = { Text("CPF ou CNPJ") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth()); Spacer(Modifier.height(6.dp))
+            OutlinedTextField(phone, setPhone, label = { Text("Telefone") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone), modifier = Modifier.fillMaxWidth()); Spacer(Modifier.height(6.dp))
             OutlinedTextField(community, setCommunity, label = { Text("Comunidade ou endereço") }, modifier = Modifier.fillMaxWidth())
             if (editing) Row(verticalAlignment = Alignment.CenterVertically) { Switch(active, setActive); Spacer(Modifier.width(8.dp)); Text(if (active) "Produtor ativo" else "Produtor desativado") }
         } }, confirmButton = { Button(onClick = save, enabled = !saving && name.trim().length >= 3) { Text(if (saving) "Salvando..." else "Salvar") } },
@@ -236,7 +245,7 @@ private fun LoginScreen(modifier: Modifier, loading: Boolean, error: String?, lo
             val text = Uri.encode("Olá! Gostaria de solicitar um acesso de teste de 7 dias ao LeiteDia para minha cooperativa.")
             context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/5587999190815?text=$text")))
         }, modifier = Modifier.fillMaxWidth()) { Text("Solicitar acesso de teste") }
-        Spacer(Modifier.height(12.dp)); Text("Versão 1.7 • teste gratuito", modifier = Modifier.align(Alignment.CenterHorizontally))
+        Spacer(Modifier.height(12.dp)); Text("Versão 1.8 • teste gratuito", modifier = Modifier.align(Alignment.CenterHorizontally))
     }
 }
 
@@ -304,7 +313,8 @@ private fun MilkEntryScreen(modifier: Modifier, profile: UserProfile, save: (Mil
                 }
             }
             if (producers.none { it.active }) Text("Você ainda não possui produtor ativo. Cadastre um na aba Produtores.", color = MaterialTheme.colorScheme.error)
-            Spacer(Modifier.height(8.dp)); OutlinedTextField(liters, { liters = it }, label = { Text("Litros") }, modifier = Modifier.fillMaxWidth()); Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(8.dp)); Text("Data: ${LocalDate.now()}", style = MaterialTheme.typography.bodySmall)
+            OutlinedTextField(liters, { value -> liters = value.filter { it.isDigit() || it == ',' || it == '.' } }, label = { Text("Litros") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth()); Spacer(Modifier.height(8.dp))
             Text("Turno", fontWeight = FontWeight.SemiBold); Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("Manhã", "Tarde").forEach { FilterChip(shift == it, { shift = it }, { Text(it) }, modifier = Modifier.weight(1f)) } }
             OutlinedTextField(notes, { notes = it }, label = { Text("Observações") }, modifier = Modifier.fillMaxWidth(), minLines = 3); Spacer(Modifier.height(14.dp))
             Button(onClick = { val producer = selectedProducer ?: return@Button; saving = true; status = null; save(MilkEntryInput(producer.id, producer.name, liters.replace(',', '.').toDouble(), shift, notes.trim())) { result -> saving = false; if (result == "OFFLINE_SAVED") { pending = pendingCount(); status = "Sem internet: lançamento salvo no celular e aguardando sincronização."; liters = ""; notes = "" } else { status = result ?: "Entrada registrada com sucesso."; if (result == null) { liters = ""; notes = "" } } } }, enabled = !saving && selectedProducer != null && liters.replace(',', '.').toDoubleOrNull()?.let { it > 0 } == true, modifier = Modifier.fillMaxWidth().height(52.dp)) { Text(if (saving) "Salvando..." else "Salvar entrada") }
