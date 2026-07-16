@@ -1,6 +1,7 @@
 package coop.macambira.leitedia
 
 import java.time.Instant
+import java.time.LocalDate
 
 data class MilkTotals(val entries: Int, val liters: Double, val morning: Double, val afternoon: Double)
 
@@ -29,4 +30,7 @@ object AppRules {
             afternoon = selected.filter { it.shift.startsWith("Tarde", ignoreCase = true) }.sumOf { it.liters }
         )
     }
+
+    fun validReportPeriod(start: LocalDate?, end: LocalDate?): Boolean =
+        start != null && end != null && !end.isBefore(start) && !end.isAfter(start.plusDays(365))
 }

@@ -5,6 +5,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.time.Instant
+import java.time.LocalDate
 
 class AppRulesTest {
     private val now = Instant.parse("2026-07-16T12:00:00Z").toEpochMilli()
@@ -37,5 +38,12 @@ class AppRulesTest {
             MilkEntry(3, "2026-07-15", "A", "Manhã", 99.0, null, null, "")
         )
         assertEquals(MilkTotals(2, 17.5, 10.0, 7.5), AppRules.totals(entries, "2026-07-16"))
+    }
+
+    @Test fun reportPeriodMustBeOrderedAndLimitedToOneYear() {
+        val start = LocalDate.parse("2026-01-01")
+        assertTrue(AppRules.validReportPeriod(start, start.plusDays(365)))
+        assertFalse(AppRules.validReportPeriod(start, start.minusDays(1)))
+        assertFalse(AppRules.validReportPeriod(start, start.plusDays(366)))
     }
 }

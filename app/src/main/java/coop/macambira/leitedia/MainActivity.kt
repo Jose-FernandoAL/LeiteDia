@@ -150,6 +150,7 @@ private fun AdminScreen(
     var active by remember { mutableStateOf(true) }; var saving by remember { mutableStateOf(false) }
     var credentials by remember { mutableStateOf<String?>(null) }
     var startDate by remember { mutableStateOf(LocalDate.now().minusDays(7).toString()) }
+    var endDate by remember { mutableStateOf(LocalDate.now().toString()) }
     var userSearch by remember { mutableStateOf("") }
     var dashboardEntries by remember { mutableStateOf<List<MilkEntry>>(emptyList()) }
 
@@ -203,6 +204,9 @@ private fun AdminScreen(
             val parsed = runCatching { LocalDate.parse(startDate) }.getOrNull()
             Text("A planilha incluirá 8 dias${parsed?.let { ": ${it} até ${it.plusDays(7)}" } ?: "."}")
             Button(onClick = { parsed?.let { SpreadsheetExporter.share(context, user, entries, it) } ?: run { error = "Informe uma data válida no formato AAAA-MM-DD." } }, enabled = parsed != null, modifier = Modifier.fillMaxWidth()) { Text("Exportar planilha de 8 dias") }
+            OutlinedTextField(endDate, { endDate = it }, label = { Text("Fim do resumo (AAAA-MM-DD)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            val parsedEnd = runCatching { LocalDate.parse(endDate) }.getOrNull()
+            Button(onClick = { if (parsed != null && parsedEnd != null) SummaryExporter.share(context, user, entries, parsed, parsedEnd) }, enabled = AppRules.validReportPeriod(parsed, parsedEnd), modifier = Modifier.fillMaxWidth()) { Text("Exportar resumo do período") }
         }
     }
 
@@ -254,7 +258,7 @@ private fun LoginScreen(modifier: Modifier, loading: Boolean, error: String?, lo
             val text = Uri.encode("Olá! Gostaria de solicitar um acesso de teste de 7 dias ao LeiteDia para minha cooperativa.")
             context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/5587999190815?text=$text")))
         }, modifier = Modifier.fillMaxWidth()) { Text("Solicitar acesso de teste") }
-        Spacer(Modifier.height(12.dp)); Text("Versão 1.9 • teste gratuito", modifier = Modifier.align(Alignment.CenterHorizontally))
+        Spacer(Modifier.height(12.dp)); Text("Versão 2.0 RC • teste gratuito", modifier = Modifier.align(Alignment.CenterHorizontally))
     }
 }
 
@@ -288,7 +292,7 @@ private fun MilkEntryScreen(modifier: Modifier, profile: UserProfile, save: (Mil
     val context = LocalContext.current
     var producers by remember { mutableStateOf<List<Producer>>(emptyList()) }; var selectedProducer by remember { mutableStateOf<Producer?>(null) }; var producerMenu by remember { mutableStateOf(false) }
     var liters by remember { mutableStateOf("") }; var notes by remember { mutableStateOf("") }; var shift by remember { mutableStateOf("Manhã") }; var status by remember { mutableStateOf<String?>(null) }; var saving by remember { mutableStateOf(false) }
-    var viewMode by remember { mutableIntStateOf(0) }; var entries by remember { mutableStateOf<List<MilkEntry>>(emptyList()) }; var historyLoading by remember { mutableStateOf(false) }; var startDate by remember { mutableStateOf(LocalDate.now().minusDays(7).toString()) }
+    var viewMode by remember { mutableIntStateOf(0) }; var entries by remember { mutableStateOf<List<MilkEntry>>(emptyList()) }; var historyLoading by remember { mutableStateOf(false) }; var startDate by remember { mutableStateOf(LocalDate.now().minusDays(7).toString()) }; var endDate by remember { mutableStateOf(LocalDate.now().toString()) }
     var pending by remember { mutableIntStateOf(pendingCount()) }; var syncing by remember { mutableStateOf(false) }
     var editingProducer by remember { mutableStateOf<Producer?>(null) }; var showProducerDialog by remember { mutableStateOf(false) }
     var producerSearch by remember { mutableStateOf("") }
@@ -341,6 +345,9 @@ private fun MilkEntryScreen(modifier: Modifier, profile: UserProfile, save: (Mil
             OutlinedTextField(startDate, { startDate = it }, label = { Text("Início da planilha (AAAA-MM-DD)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
             val parsed = runCatching { LocalDate.parse(startDate) }.getOrNull()
             Button(onClick = { parsed?.let { SpreadsheetExporter.share(context, profile, entries, it) } }, enabled = parsed != null && entries.isNotEmpty(), modifier = Modifier.fillMaxWidth()) { Text("Compartilhar minha planilha de 8 dias") }
+            OutlinedTextField(endDate, { endDate = it }, label = { Text("Fim do resumo (AAAA-MM-DD)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+            val parsedEnd = runCatching { LocalDate.parse(endDate) }.getOrNull()
+            OutlinedButton(onClick = { if (parsed != null && parsedEnd != null) SummaryExporter.share(context, profile, entries, parsed, parsedEnd) }, enabled = entries.isNotEmpty() && AppRules.validReportPeriod(parsed, parsedEnd), modifier = Modifier.fillMaxWidth()) { Text("Compartilhar resumo do período") }
         } else Column(Modifier.fillMaxSize()) {
             OutlinedTextField(producerSearch, { producerSearch = it }, label = { Text("Pesquisar produtor") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
