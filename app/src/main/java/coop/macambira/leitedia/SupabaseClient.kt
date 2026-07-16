@@ -180,6 +180,13 @@ class SupabaseClient {
         }
     }
 
+    fun updateMilkEntry(entryId: Long, liters: Double, shift: String, notes: String) {
+        request("/rest/v1/milk_entries?id=eq.$entryId", "PATCH", JSONObject()
+            .put("liters", liters)
+            .put("shift", shift)
+            .put("notes", notes.trim().ifBlank { JSONObject.NULL }))
+    }
+
     fun createUser(loginId: String, fullName: String, password: String) {
         request(
             path = "/functions/v1/create-cooperative-user",
@@ -215,6 +222,10 @@ class SupabaseClient {
             .put("active", active)
         if (!newPassword.isNullOrBlank()) body.put("password", newPassword)
         request("/functions/v1/create-cooperative-user", "POST", body)
+    }
+
+    fun changeOwnPassword(newPassword: String) {
+        request("/auth/v1/user", "PUT", JSONObject().put("password", newPassword))
     }
 
     fun logout() {
