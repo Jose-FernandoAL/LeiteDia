@@ -6,6 +6,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.time.LocalDate
 import java.time.LocalTime
+import java.util.UUID
 
 data class UserProfile(
     val id: String,
@@ -21,7 +22,10 @@ data class MilkEntryInput(
     val supplier: String,
     val liters: Double,
     val shift: String,
-    val notes: String
+    val notes: String,
+    val clientEntryId: String = UUID.randomUUID().toString(),
+    val entryDate: String = LocalDate.now().toString(),
+    val entryTime: String = LocalTime.now().withNano(0).toString()
 )
 
 data class Producer(
@@ -94,14 +98,15 @@ class SupabaseClient {
         val body = JSONObject()
             .put("cooperative_id", profile.cooperativeId)
             .put("user_id", profile.id)
-            .put("entry_date", LocalDate.now().toString())
-            .put("entry_time", LocalTime.now().withNano(0).toString())
+            .put("entry_date", input.entryDate)
+            .put("entry_time", input.entryTime)
+            .put("client_entry_id", input.clientEntryId)
             .put("producer_id", input.producerId)
             .put("supplier", input.supplier)
             .put("shift", input.shift)
             .put("liters", input.liters)
             .put("notes", input.notes.ifBlank { JSONObject.NULL })
-        request("/rest/v1/milk_entries", "POST", body)
+        request("/rest/v1/milk_entries?on_conflict=user_id,client_entry_id", "POST", body, prefer = "resolution=ignore-duplicates,return=minimal")
     }
 
     fun listProducers(activeOnly: Boolean = false): List<Producer> {
@@ -227,15 +232,16 @@ class SupabaseClient {
         path: String,
         method: String,
         body: JSONObject? = null,
-        authenticated: Boolean = true
+        authenticated: Boolean = true,
+        prefer: String? = null
     ): JSONObject {
-        val connection = open(path, method, authenticated)
+        val connection = open(path, method, authenticated, prefer)
         if (body != null) connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
         val text = readResponse(connection)
         return if (text.isBlank()) JSONObject() else JSONObject(text)
     }
 
-    private fun open(path: String, method: String, authenticated: Boolean): HttpURLConnection {
+    private fun open(path: String, method: String, authenticated: Boolean, prefer: String? = null): HttpURLConnection {
         return (URL(baseUrl + path).openConnection() as HttpURLConnection).apply {
             requestMethod = method
             connectTimeout = 15_000
@@ -243,6 +249,7 @@ class SupabaseClient {
             setRequestProperty("apikey", apiKey)
             setRequestProperty("Content-Type", "application/json")
             setRequestProperty("Accept", "application/json")
+            if (prefer != null) setRequestProperty("Prefer", prefer)
             if (authenticated) {
                 val token = accessToken ?: error("Sessão expirada")
                 setRequestProperty("Authorization", "Bearer $token")

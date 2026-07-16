@@ -21,6 +21,8 @@ import androidx.compose.ui.unit.dp
 import coop.macambira.leitedia.ui.theme.LeiteDiaTheme
 import java.security.SecureRandom
 import java.time.LocalDate
+import java.io.IOException
+import kotlinx.coroutines.delay
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -33,6 +35,8 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun LeiteDiaApp(modifier: Modifier) {
     val client = remember { SupabaseClient() }
+    val appContext = LocalContext.current.applicationContext
+    val offline = remember { OfflineStore(appContext) }
     var profile by remember { mutableStateOf<UserProfile?>(null) }
     var license by remember { mutableStateOf<LicenseStatus?>(null) }
     var loading by remember { mutableStateOf(false) }
@@ -50,14 +54,38 @@ private fun LeiteDiaApp(modifier: Modifier) {
         onLogout = { client.logout(); profile = null }
     ) else MilkEntryScreen(
         modifier, profile!!,
-        save = { input, done -> Thread { done(runCatching { client.saveMilkEntry(profile!!, input) }.exceptionOrNull()?.message) }.start() },
-        loadProducers = { done -> Thread { val r = runCatching { client.listProducers() }; done(r.getOrNull(), r.exceptionOrNull()?.message) }.start() },
+        save = { input, done -> Thread {
+            val failure = runCatching { client.saveMilkEntry(profile!!, input) }.exceptionOrNull()
+            if (failure == null) done(null)
+            else if (failure.isNetworkFailure()) { offline.queue(profile!!.id, input); done("OFFLINE_SAVED") }
+            else done(failure.message)
+        }.start() },
+        loadProducers = { done -> Thread {
+            val r = runCatching { client.listProducers() }
+            if (r.isSuccess) { offline.cacheProducers(profile!!.id, r.getOrThrow()); done(r.getOrThrow(), null) }
+            else if (r.exceptionOrNull()?.isNetworkFailure() == true) done(offline.cachedProducers(profile!!.id), "Modo offline: usando produtores salvos neste celular.")
+            else done(null, r.exceptionOrNull()?.message)
+        }.start() },
         createProducer = { name, document, phone, community, done -> Thread { done(runCatching { client.createProducer(name, document, phone, community) }.exceptionOrNull()?.message) }.start() },
         updateProducer = { id, name, document, phone, community, active, done -> Thread { done(runCatching { client.updateProducer(id, name, document, phone, community, active) }.exceptionOrNull()?.message) }.start() },
+        pendingCount = { offline.pendingCount(profile!!.id) },
+        syncPending = { done -> Thread {
+            var sent = 0
+            var failure: Throwable? = null
+            for (pending in offline.pending(profile!!.id)) {
+                val result = runCatching { client.saveMilkEntry(profile!!, pending.input) }
+                if (result.isSuccess) { offline.remove(pending.input.clientEntryId); sent++ }
+                else { failure = result.exceptionOrNull(); break }
+            }
+            done(offline.pendingCount(profile!!.id), sent, failure?.takeUnless { it.isNetworkFailure() }?.message)
+        }.start() },
         loadEntries = { done -> Thread { val r = runCatching { client.listEntries(profile!!.id) }; done(r.getOrNull(), r.exceptionOrNull()?.message) }.start() },
         logout = { client.logout(); profile = null }
     )
 }
+
+private fun Throwable.isNetworkFailure(): Boolean = generateSequence(this as Throwable?) { it.cause }
+    .any { it is IOException }
 
 @Composable
 private fun AdminScreen(
@@ -174,7 +202,7 @@ private fun LoginScreen(modifier: Modifier, loading: Boolean, error: String?, lo
             val text = Uri.encode("Olá! Gostaria de solicitar um acesso de teste de 7 dias ao LeiteDia para minha cooperativa.")
             context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/5587999190815?text=$text")))
         }, modifier = Modifier.fillMaxWidth()) { Text("Solicitar acesso de teste") }
-        Spacer(Modifier.height(12.dp)); Text("Versão 1.5 • teste gratuito", modifier = Modifier.align(Alignment.CenterHorizontally))
+        Spacer(Modifier.height(12.dp)); Text("Versão 1.6 • teste gratuito", modifier = Modifier.align(Alignment.CenterHorizontally))
     }
 }
 
@@ -199,16 +227,23 @@ private fun MilkEntryScreen(modifier: Modifier, profile: UserProfile, save: (Mil
     loadProducers: ((List<Producer>?, String?) -> Unit) -> Unit,
     createProducer: (String, String, String, String, (String?) -> Unit) -> Unit,
     updateProducer: (Long, String, String, String, String, Boolean, (String?) -> Unit) -> Unit,
+    pendingCount: () -> Int,
+    syncPending: ((Int, Int, String?) -> Unit) -> Unit,
     loadEntries: ((List<MilkEntry>?, String?) -> Unit) -> Unit, logout: () -> Unit) {
     val context = LocalContext.current
     var producers by remember { mutableStateOf<List<Producer>>(emptyList()) }; var selectedProducer by remember { mutableStateOf<Producer?>(null) }; var producerMenu by remember { mutableStateOf(false) }
     var liters by remember { mutableStateOf("") }; var notes by remember { mutableStateOf("") }; var shift by remember { mutableStateOf("Manhã") }; var status by remember { mutableStateOf<String?>(null) }; var saving by remember { mutableStateOf(false) }
     var viewMode by remember { mutableIntStateOf(0) }; var entries by remember { mutableStateOf<List<MilkEntry>>(emptyList()) }; var historyLoading by remember { mutableStateOf(false) }; var startDate by remember { mutableStateOf(LocalDate.now().minusDays(7).toString()) }
+    var pending by remember { mutableIntStateOf(pendingCount()) }; var syncing by remember { mutableStateOf(false) }
     var editingProducer by remember { mutableStateOf<Producer?>(null) }; var showProducerDialog by remember { mutableStateOf(false) }
     var producerName by remember { mutableStateOf("") }; var producerDocument by remember { mutableStateOf("") }; var producerPhone by remember { mutableStateOf("") }; var producerCommunity by remember { mutableStateOf("") }; var producerActive by remember { mutableStateOf(true) }
     fun refreshHistory() { historyLoading = true; loadEntries { value, message -> entries = value.orEmpty(); status = message; historyLoading = false } }
     fun refreshProducers() { loadProducers { value, message -> producers = value.orEmpty(); selectedProducer = selectedProducer?.takeIf { selected -> value.orEmpty().any { it.id == selected.id && it.active } } ?: value?.firstOrNull { it.active }; status = message } }
-    LaunchedEffect(Unit) { refreshProducers() }
+    fun synchronize(showMessage: Boolean = false) { if (syncing) return; syncing = true; syncPending { remaining, sent, message -> pending = remaining; syncing = false; if (showMessage) status = message ?: if (sent > 0) "$sent lançamento(s) sincronizado(s)." else if (remaining == 0) "Tudo sincronizado." else "Sem conexão. Os dados continuam salvos no celular." } }
+    LaunchedEffect(Unit) {
+        refreshProducers()
+        while (true) { synchronize(false); delay(30_000) }
+    }
     Column(modifier.fillMaxSize().padding(20.dp)) {
         Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) { Column { Text(listOf("Entrada de leite", "Meu histórico", "Meus produtores")[viewMode], style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Text(profile.fullName) }; TextButton(onClick = logout) { Text("Sair") } }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -217,6 +252,10 @@ private fun MilkEntryScreen(modifier: Modifier, profile: UserProfile, save: (Mil
             FilterChip(viewMode == 2, { viewMode = 2; refreshProducers() }, { Text("Produtores") }, modifier = Modifier.weight(1f))
         }
         Spacer(Modifier.height(10.dp))
+        if (pending > 0 || syncing) ElevatedCard(Modifier.fillMaxWidth().padding(bottom = 8.dp)) { Row(Modifier.fillMaxWidth().padding(12.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
+            Text(if (syncing) "Sincronizando..." else "$pending lançamento(s) pendente(s)", fontWeight = FontWeight.SemiBold)
+            TextButton(onClick = { synchronize(true) }, enabled = !syncing) { Text("Sincronizar") }
+        } }
         if (viewMode == 0) Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
             Box {
                 OutlinedButton(onClick = { producerMenu = true }, modifier = Modifier.fillMaxWidth().height(56.dp)) { Text(selectedProducer?.name ?: "Selecionar produtor") }
@@ -228,8 +267,8 @@ private fun MilkEntryScreen(modifier: Modifier, profile: UserProfile, save: (Mil
             Spacer(Modifier.height(8.dp)); OutlinedTextField(liters, { liters = it }, label = { Text("Litros") }, modifier = Modifier.fillMaxWidth()); Spacer(Modifier.height(8.dp))
             Text("Turno", fontWeight = FontWeight.SemiBold); Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("Manhã", "Tarde").forEach { FilterChip(shift == it, { shift = it }, { Text(it) }, modifier = Modifier.weight(1f)) } }
             OutlinedTextField(notes, { notes = it }, label = { Text("Observações") }, modifier = Modifier.fillMaxWidth(), minLines = 3); Spacer(Modifier.height(14.dp))
-            Button(onClick = { val producer = selectedProducer ?: return@Button; saving = true; status = null; save(MilkEntryInput(producer.id, producer.name, liters.replace(',', '.').toDouble(), shift, notes.trim())) { saving = false; status = it ?: "Entrada registrada com sucesso."; if (it == null) { liters = ""; notes = "" } } }, enabled = !saving && selectedProducer != null && liters.replace(',', '.').toDoubleOrNull()?.let { it > 0 } == true, modifier = Modifier.fillMaxWidth().height(52.dp)) { Text(if (saving) "Salvando..." else "Salvar entrada") }
-            status?.let { Text(it, color = if (it.contains("sucesso")) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error) }
+            Button(onClick = { val producer = selectedProducer ?: return@Button; saving = true; status = null; save(MilkEntryInput(producer.id, producer.name, liters.replace(',', '.').toDouble(), shift, notes.trim())) { result -> saving = false; if (result == "OFFLINE_SAVED") { pending = pendingCount(); status = "Sem internet: lançamento salvo no celular e aguardando sincronização."; liters = ""; notes = "" } else { status = result ?: "Entrada registrada com sucesso."; if (result == null) { liters = ""; notes = "" } } } }, enabled = !saving && selectedProducer != null && liters.replace(',', '.').toDoubleOrNull()?.let { it > 0 } == true, modifier = Modifier.fillMaxWidth().height(52.dp)) { Text(if (saving) "Salvando..." else "Salvar entrada") }
+            status?.let { Text(it, color = if (it.contains("sucesso") || it.contains("salvo no celular") || it.contains("sincronizado") || it.contains("Tudo sincronizado")) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error) }
         } else if (viewMode == 1) Column(Modifier.fillMaxSize()) {
             if (historyLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
             ElevatedCard(Modifier.fillMaxWidth()) { Row(Modifier.fillMaxWidth().padding(14.dp), Arrangement.SpaceBetween) { Text("${entries.size} registros"); Text("%.2f L".format(entries.sumOf { it.liters }), fontWeight = FontWeight.Bold) } }
