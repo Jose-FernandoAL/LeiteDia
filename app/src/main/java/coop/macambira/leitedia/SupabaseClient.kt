@@ -56,6 +56,7 @@ class SupabaseClient {
     private val apiKey = "sb_publishable_VD6P1JIYMzr9fl-z0eQGLQ_Q4IhtaCK"
     private var accessToken: String? = null
     private var cooperativeId: String? = null
+    private var currentUserId: String? = null
 
     fun login(loginId: String, password: String): UserProfile {
         val email = if ('@' in loginId) loginId.trim() else "${loginId.trim().lowercase()}@leitedia.local"
@@ -85,6 +86,7 @@ class SupabaseClient {
             .also {
                 if (!it.active) { accessToken = null; error("Usuário desativado. Procure a administração.") }
                 cooperativeId = it.cooperativeId
+                currentUserId = it.id
             }
     }
 
@@ -120,8 +122,10 @@ class SupabaseClient {
 
     fun createProducer(name: String, document: String, phone: String, community: String) {
         val cooperative = cooperativeId ?: error("Sessão expirada")
+        val userId = currentUserId ?: error("Sessão expirada")
         request("/rest/v1/producers", "POST", JSONObject()
             .put("cooperative_id", cooperative)
+            .put("user_id", userId)
             .put("name", name.trim())
             .put("document", document.trim().ifBlank { JSONObject.NULL })
             .put("phone", phone.trim().ifBlank { JSONObject.NULL })
@@ -211,6 +215,7 @@ class SupabaseClient {
     fun logout() {
         accessToken = null
         cooperativeId = null
+        currentUserId = null
     }
 
     private fun requestArray(path: String): JSONArray {
