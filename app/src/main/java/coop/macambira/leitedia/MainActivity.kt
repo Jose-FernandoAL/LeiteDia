@@ -45,12 +45,16 @@ private fun LeiteDiaApp(modifier: Modifier) {
         modifier, profile!!,
         loadUsers = { done -> Thread { val r = runCatching { client.listUsers() }; done(r.getOrNull(), r.exceptionOrNull()?.message) }.start() },
         loadEntries = { id, done -> Thread { val r = runCatching { client.listEntries(id) }; done(r.getOrNull(), r.exceptionOrNull()?.message) }.start() },
+        loadProducers = { done -> Thread { val r = runCatching { client.listProducers() }; done(r.getOrNull(), r.exceptionOrNull()?.message) }.start() },
+        createProducer = { name, document, phone, community, done -> Thread { done(runCatching { client.createProducer(name, document, phone, community) }.exceptionOrNull()?.message) }.start() },
+        updateProducer = { id, name, document, phone, community, active, done -> Thread { done(runCatching { client.updateProducer(id, name, document, phone, community, active) }.exceptionOrNull()?.message) }.start() },
         createUser = { id, name, pass, done -> Thread { done(runCatching { client.createUser(id, name, pass) }.exceptionOrNull()?.message) }.start() },
         updateUser = { id, login, name, active, pass, done -> Thread { done(runCatching { client.updateUser(id, login, name, active, pass) }.exceptionOrNull()?.message) }.start() },
         onLogout = { client.logout(); profile = null }
     ) else MilkEntryScreen(
         modifier, profile!!,
         save = { input, done -> Thread { done(runCatching { client.saveMilkEntry(profile!!, input) }.exceptionOrNull()?.message) }.start() },
+        loadProducers = { done -> Thread { val r = runCatching { client.listProducers(activeOnly = true) }; done(r.getOrNull(), r.exceptionOrNull()?.message) }.start() },
         loadEntries = { done -> Thread { val r = runCatching { client.listEntries(profile!!.id) }; done(r.getOrNull(), r.exceptionOrNull()?.message) }.start() },
         logout = { client.logout(); profile = null }
     )
@@ -61,6 +65,9 @@ private fun AdminScreen(
     modifier: Modifier, admin: UserProfile,
     loadUsers: (((List<UserProfile>?, String?) -> Unit) -> Unit),
     loadEntries: (String, (List<MilkEntry>?, String?) -> Unit) -> Unit,
+    loadProducers: ((List<Producer>?, String?) -> Unit) -> Unit,
+    createProducer: (String, String, String, String, (String?) -> Unit) -> Unit,
+    updateProducer: (Long, String, String, String, String, Boolean, (String?) -> Unit) -> Unit,
     createUser: (String, String, String, (String?) -> Unit) -> Unit,
     updateUser: (String, String, String, Boolean, String?, (String?) -> Unit) -> Unit,
     onLogout: () -> Unit
@@ -77,8 +84,16 @@ private fun AdminScreen(
     var active by remember { mutableStateOf(true) }; var saving by remember { mutableStateOf(false) }
     var credentials by remember { mutableStateOf<String?>(null) }
     var startDate by remember { mutableStateOf(LocalDate.now().minusDays(7).toString()) }
+    var producerMode by remember { mutableStateOf(false) }
+    var producers by remember { mutableStateOf<List<Producer>>(emptyList()) }
+    var editingProducer by remember { mutableStateOf<Producer?>(null) }
+    var showProducerDialog by remember { mutableStateOf(false) }
+    var producerName by remember { mutableStateOf("") }; var producerDocument by remember { mutableStateOf("") }
+    var producerPhone by remember { mutableStateOf("") }; var producerCommunity by remember { mutableStateOf("") }
+    var producerActive by remember { mutableStateOf(true) }
 
     fun refreshUsers() { loading = true; loadUsers { value, message -> users = value.orEmpty(); error = message; loading = false } }
+    fun refreshProducers() { loading = true; loadProducers { value, message -> producers = value.orEmpty(); error = message; loading = false } }
     fun openUser(user: UserProfile) { selected = user; loading = true; loadEntries(user.id) { value, message -> entries = value.orEmpty(); error = message; loading = false } }
     LaunchedEffect(Unit) { refreshUsers() }
 
@@ -89,22 +104,32 @@ private fun AdminScreen(
         }
         Spacer(Modifier.height(12.dp))
         if (selected == null) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(!producerMode, { producerMode = false; refreshUsers() }, { Text("Usuários") }, modifier = Modifier.weight(1f))
+                FilterChip(producerMode, { producerMode = true; refreshProducers() }, { Text("Produtores") }, modifier = Modifier.weight(1f))
+            }
             Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
-                Text("Usuários da cooperativa", fontWeight = FontWeight.Bold)
-                TextButton(onClick = { refreshUsers() }) { Text("Atualizar") }
+                Text(if (producerMode) "Produtores da cooperativa" else "Usuários da cooperativa", fontWeight = FontWeight.Bold)
+                TextButton(onClick = { if (producerMode) refreshProducers() else refreshUsers() }) { Text("Atualizar") }
             }
             if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
-                users.forEach { user -> ElevatedCard(Modifier.fillMaxWidth().padding(vertical = 5.dp).clickable { openUser(user) }) {
-                    Row(Modifier.fillMaxWidth().padding(16.dp), Arrangement.SpaceBetween) {
-                        Column { Text(user.fullName, fontWeight = FontWeight.Bold); Text("ID: ${user.loginId}") }
-                        Text(if (!user.active) "Desativado" else if (user.role == "admin") "Administrador" else "Ativo", color = if (user.active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
-                    }
+                if (producerMode) producers.forEach { producer -> ElevatedCard(Modifier.fillMaxWidth().padding(vertical = 5.dp).clickable {
+                    editingProducer = producer; producerName = producer.name; producerDocument = producer.document; producerPhone = producer.phone; producerCommunity = producer.community; producerActive = producer.active; showProducerDialog = true
+                }) { Row(Modifier.fillMaxWidth().padding(16.dp), Arrangement.SpaceBetween) {
+                    Column { Text(producer.name, fontWeight = FontWeight.Bold); Text(listOf(producer.community, producer.phone).filter { it.isNotBlank() }.joinToString(" • ").ifBlank { "Sem contato informado" }) }
+                    Text(if (producer.active) "Ativo" else "Desativado", color = if (producer.active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
+                } } }
+                else users.forEach { user -> ElevatedCard(Modifier.fillMaxWidth().padding(vertical = 5.dp).clickable { openUser(user) }) {
+                    Row(Modifier.fillMaxWidth().padding(16.dp), Arrangement.SpaceBetween) { Column { Text(user.fullName, fontWeight = FontWeight.Bold); Text("ID: ${user.loginId}") }; Text(if (!user.active) "Desativado" else if (user.role == "admin") "Administrador" else "Ativo", color = if (user.active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error) }
                 } }
             }
-            credentials?.let { Text(it, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold); Spacer(Modifier.height(8.dp)) }
-            Button(onClick = { val r = SecureRandom(); name = ""; login = "USR%06d".format(r.nextInt(1_000_000)); password = "L%07d".format(r.nextInt(10_000_000)); showCreate = true }, Modifier.fillMaxWidth()) { Text("Cadastrar novo usuário") }
+            if (!producerMode) credentials?.let { Text(it, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold); Spacer(Modifier.height(8.dp)) }
+            Button(onClick = {
+                if (producerMode) { editingProducer = null; producerName = ""; producerDocument = ""; producerPhone = ""; producerCommunity = ""; producerActive = true; showProducerDialog = true }
+                else { val r = SecureRandom(); name = ""; login = "USR%06d".format(r.nextInt(1_000_000)); password = "L%07d".format(r.nextInt(10_000_000)); showCreate = true }
+            }, Modifier.fillMaxWidth()) { Text(if (producerMode) "Cadastrar produtor" else "Cadastrar novo usuário") }
         } else {
             val user = selected!!
             TextButton(onClick = { selected = null; entries = emptyList(); error = null }) { Text("← Voltar aos usuários") }
@@ -117,7 +142,7 @@ private fun AdminScreen(
             ElevatedCard(Modifier.fillMaxWidth()) { Row(Modifier.fillMaxWidth().padding(16.dp), Arrangement.SpaceBetween) { Text("${entries.size} registros"); Text("Total: %.2f L".format(entries.sumOf { it.liters }), fontWeight = FontWeight.Bold) } }
             Spacer(Modifier.height(8.dp))
             Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) { entries.forEach { entry -> Card(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-                Row(Modifier.fillMaxWidth().padding(14.dp), Arrangement.SpaceBetween) { Column { Text(entry.entryDate, fontWeight = FontWeight.Bold); Text("${entry.supplier} • ${entry.shift}"); entry.temperature?.let { Text("Temperatura: %.1f °C".format(it)) } }; Text("%.2f L".format(entry.liters), fontWeight = FontWeight.Bold) }
+                Row(Modifier.fillMaxWidth().padding(14.dp), Arrangement.SpaceBetween) { Column { Text(entry.entryDate, fontWeight = FontWeight.Bold); Text("${entry.supplier} • ${entry.shift}") }; Text("%.2f L".format(entry.liters), fontWeight = FontWeight.Bold) }
             } }; if (!loading && entries.isEmpty()) Text("Nenhuma entrada registrada.") }
             OutlinedTextField(startDate, { startDate = it }, label = { Text("Início do período (AAAA-MM-DD)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             val parsed = runCatching { LocalDate.parse(startDate) }.getOrNull()
@@ -132,6 +157,29 @@ private fun AdminScreen(
     if (showEdit && selected != null) UserDialog("Gerenciar usuário", name, login, password, active, { name = it }, { login = it.uppercase() }, { password = it }, { active = it }, saving, {
         saving = true; updateUser(selected!!.id, login, name, active, password.ifBlank { null }) { message -> saving = false; if (message == null) { val updated = selected!!.copy(loginId = login, fullName = name, active = active); selected = updated; showEdit = false; refreshUsers() } else error = message }
     }, { showEdit = false }, editing = true)
+    if (showProducerDialog) ProducerDialog(editingProducer != null, producerName, producerDocument, producerPhone, producerCommunity, producerActive,
+        { producerName = it }, { producerDocument = it }, { producerPhone = it }, { producerCommunity = it }, { producerActive = it }, saving,
+        save = {
+            saving = true
+            val done: (String?) -> Unit = { message -> saving = false; if (message == null) { showProducerDialog = false; refreshProducers() } else error = message }
+            editingProducer?.let { updateProducer(it.id, producerName, producerDocument, producerPhone, producerCommunity, producerActive, done) }
+                ?: createProducer(producerName, producerDocument, producerPhone, producerCommunity, done)
+        }, dismiss = { showProducerDialog = false })
+}
+
+@Composable
+private fun ProducerDialog(editing: Boolean, name: String, document: String, phone: String, community: String, active: Boolean,
+    setName: (String) -> Unit, setDocument: (String) -> Unit, setPhone: (String) -> Unit, setCommunity: (String) -> Unit,
+    setActive: (Boolean) -> Unit, saving: Boolean, save: () -> Unit, dismiss: () -> Unit) {
+    AlertDialog(onDismissRequest = { if (!saving) dismiss() }, title = { Text(if (editing) "Gerenciar produtor" else "Novo produtor") },
+        text = { Column(Modifier.verticalScroll(rememberScrollState())) {
+            OutlinedTextField(name, setName, label = { Text("Nome completo *") }, modifier = Modifier.fillMaxWidth()); Spacer(Modifier.height(6.dp))
+            OutlinedTextField(document, setDocument, label = { Text("CPF ou CNPJ") }, modifier = Modifier.fillMaxWidth()); Spacer(Modifier.height(6.dp))
+            OutlinedTextField(phone, setPhone, label = { Text("Telefone") }, modifier = Modifier.fillMaxWidth()); Spacer(Modifier.height(6.dp))
+            OutlinedTextField(community, setCommunity, label = { Text("Comunidade ou endereço") }, modifier = Modifier.fillMaxWidth())
+            if (editing) Row(verticalAlignment = Alignment.CenterVertically) { Switch(active, setActive); Spacer(Modifier.width(8.dp)); Text(if (active) "Produtor ativo" else "Produtor desativado") }
+        } }, confirmButton = { Button(onClick = save, enabled = !saving && name.trim().length >= 3) { Text(if (saving) "Salvando..." else "Salvar") } },
+        dismissButton = { TextButton(onClick = dismiss, enabled = !saving) { Text("Cancelar") } })
 }
 
 @Composable
@@ -159,7 +207,7 @@ private fun LoginScreen(modifier: Modifier, loading: Boolean, error: String?, lo
             val text = Uri.encode("Olá! Gostaria de solicitar um acesso de teste de 7 dias ao LeiteDia para minha cooperativa.")
             context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/5587999190815?text=$text")))
         }, modifier = Modifier.fillMaxWidth()) { Text("Solicitar acesso de teste") }
-        Spacer(Modifier.height(12.dp)); Text("Versão 1.3 • teste gratuito", modifier = Modifier.align(Alignment.CenterHorizontally))
+        Spacer(Modifier.height(12.dp)); Text("Versão 1.4 • teste gratuito", modifier = Modifier.align(Alignment.CenterHorizontally))
     }
 }
 
@@ -180,11 +228,15 @@ private fun TrialExpiredScreen(modifier: Modifier, license: LicenseStatus, logou
 }
 
 @Composable
-private fun MilkEntryScreen(modifier: Modifier, profile: UserProfile, save: (MilkEntryInput, (String?) -> Unit) -> Unit, loadEntries: ((List<MilkEntry>?, String?) -> Unit) -> Unit, logout: () -> Unit) {
+private fun MilkEntryScreen(modifier: Modifier, profile: UserProfile, save: (MilkEntryInput, (String?) -> Unit) -> Unit,
+    loadProducers: ((List<Producer>?, String?) -> Unit) -> Unit,
+    loadEntries: ((List<MilkEntry>?, String?) -> Unit) -> Unit, logout: () -> Unit) {
     val context = LocalContext.current
-    var supplier by remember { mutableStateOf("") }; var liters by remember { mutableStateOf("") }; var temperature by remember { mutableStateOf("") }; var fat by remember { mutableStateOf("") }; var notes by remember { mutableStateOf("") }; var shift by remember { mutableStateOf("Manhã") }; var status by remember { mutableStateOf<String?>(null) }; var saving by remember { mutableStateOf(false) }
+    var producers by remember { mutableStateOf<List<Producer>>(emptyList()) }; var selectedProducer by remember { mutableStateOf<Producer?>(null) }; var producerMenu by remember { mutableStateOf(false) }
+    var liters by remember { mutableStateOf("") }; var notes by remember { mutableStateOf("") }; var shift by remember { mutableStateOf("Manhã") }; var status by remember { mutableStateOf<String?>(null) }; var saving by remember { mutableStateOf(false) }
     var showHistory by remember { mutableStateOf(false) }; var entries by remember { mutableStateOf<List<MilkEntry>>(emptyList()) }; var historyLoading by remember { mutableStateOf(false) }; var startDate by remember { mutableStateOf(LocalDate.now().minusDays(7).toString()) }
     fun refreshHistory() { historyLoading = true; loadEntries { value, message -> entries = value.orEmpty(); status = message; historyLoading = false } }
+    LaunchedEffect(Unit) { loadProducers { value, message -> producers = value.orEmpty(); selectedProducer = selectedProducer ?: value?.firstOrNull(); status = message } }
     Column(modifier.fillMaxSize().padding(20.dp)) {
         Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) { Column { Text(if (showHistory) "Meu histórico" else "Entrada de leite", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Text(profile.fullName) }; TextButton(onClick = logout) { Text("Sair") } }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -193,10 +245,17 @@ private fun MilkEntryScreen(modifier: Modifier, profile: UserProfile, save: (Mil
         }
         Spacer(Modifier.height(10.dp))
         if (!showHistory) Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-            OutlinedTextField(supplier, { supplier = it }, label = { Text("Fornecedor") }, modifier = Modifier.fillMaxWidth()); Spacer(Modifier.height(8.dp)); OutlinedTextField(liters, { liters = it }, label = { Text("Litros") }, modifier = Modifier.fillMaxWidth()); Spacer(Modifier.height(8.dp))
-            Text("Turno", fontWeight = FontWeight.SemiBold); Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { listOf("Manhã", "Tarde", "Noite").forEach { FilterChip(shift == it, { shift = it }, { Text(it) }) } }
-            OutlinedTextField(temperature, { temperature = it }, label = { Text("Temperatura (°C)") }, modifier = Modifier.fillMaxWidth()); Spacer(Modifier.height(8.dp)); OutlinedTextField(fat, { fat = it }, label = { Text("Gordura (%)") }, modifier = Modifier.fillMaxWidth()); Spacer(Modifier.height(8.dp)); OutlinedTextField(notes, { notes = it }, label = { Text("Observações") }, modifier = Modifier.fillMaxWidth(), minLines = 3); Spacer(Modifier.height(14.dp))
-            Button(onClick = { saving = true; status = null; save(MilkEntryInput(supplier.trim(), liters.replace(',', '.').toDouble(), shift, temperature.replace(',', '.').toDoubleOrNull(), fat.replace(',', '.').toDoubleOrNull(), notes.trim())) { saving = false; status = it ?: "Entrada registrada com sucesso."; if (it == null) { liters = ""; temperature = ""; fat = ""; notes = "" } } }, enabled = !saving && supplier.isNotBlank() && liters.replace(',', '.').toDoubleOrNull()?.let { it > 0 } == true, modifier = Modifier.fillMaxWidth().height(52.dp)) { Text(if (saving) "Salvando..." else "Salvar entrada") }
+            Box {
+                OutlinedButton(onClick = { producerMenu = true }, modifier = Modifier.fillMaxWidth().height(56.dp)) { Text(selectedProducer?.name ?: "Selecionar produtor") }
+                DropdownMenu(expanded = producerMenu, onDismissRequest = { producerMenu = false }) {
+                    producers.forEach { producer -> DropdownMenuItem(text = { Column { Text(producer.name); if (producer.community.isNotBlank()) Text(producer.community, style = MaterialTheme.typography.bodySmall) } }, onClick = { selectedProducer = producer; producerMenu = false }) }
+                }
+            }
+            if (producers.isEmpty()) Text("Nenhum produtor ativo. Peça ao administrador para cadastrar um produtor.", color = MaterialTheme.colorScheme.error)
+            Spacer(Modifier.height(8.dp)); OutlinedTextField(liters, { liters = it }, label = { Text("Litros") }, modifier = Modifier.fillMaxWidth()); Spacer(Modifier.height(8.dp))
+            Text("Turno", fontWeight = FontWeight.SemiBold); Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("Manhã", "Tarde").forEach { FilterChip(shift == it, { shift = it }, { Text(it) }, modifier = Modifier.weight(1f)) } }
+            OutlinedTextField(notes, { notes = it }, label = { Text("Observações") }, modifier = Modifier.fillMaxWidth(), minLines = 3); Spacer(Modifier.height(14.dp))
+            Button(onClick = { val producer = selectedProducer ?: return@Button; saving = true; status = null; save(MilkEntryInput(producer.id, producer.name, liters.replace(',', '.').toDouble(), shift, notes.trim())) { saving = false; status = it ?: "Entrada registrada com sucesso."; if (it == null) { liters = ""; notes = "" } } }, enabled = !saving && selectedProducer != null && liters.replace(',', '.').toDoubleOrNull()?.let { it > 0 } == true, modifier = Modifier.fillMaxWidth().height(52.dp)) { Text(if (saving) "Salvando..." else "Salvar entrada") }
             status?.let { Text(it, color = if (it.contains("sucesso")) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error) }
         } else Column(Modifier.fillMaxSize()) {
             if (historyLoading) LinearProgressIndicator(Modifier.fillMaxWidth())

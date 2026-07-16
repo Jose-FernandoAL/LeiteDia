@@ -17,12 +17,20 @@ data class UserProfile(
 )
 
 data class MilkEntryInput(
+    val producerId: Long,
     val supplier: String,
     val liters: Double,
     val shift: String,
-    val temperature: Double?,
-    val fatPercentage: Double?,
     val notes: String
+)
+
+data class Producer(
+    val id: Long,
+    val name: String,
+    val document: String,
+    val phone: String,
+    val community: String,
+    val active: Boolean
 )
 
 data class MilkEntry(
@@ -47,6 +55,7 @@ class SupabaseClient {
     private val baseUrl = "https://lqrddudfczmmlqqkgnly.supabase.co"
     private val apiKey = "sb_publishable_VD6P1JIYMzr9fl-z0eQGLQ_Q4IhtaCK"
     private var accessToken: String? = null
+    private var cooperativeId: String? = null
 
     fun login(loginId: String, password: String): UserProfile {
         val email = if ('@' in loginId) loginId.trim() else "${loginId.trim().lowercase()}@leitedia.local"
@@ -73,7 +82,10 @@ class SupabaseClient {
             role = item.getString("role"),
             active = item.optBoolean("active", true)
         )
-            .also { if (!it.active) { accessToken = null; error("Usuário desativado. Procure a administração.") } }
+            .also {
+                if (!it.active) { accessToken = null; error("Usuário desativado. Procure a administração.") }
+                cooperativeId = it.cooperativeId
+            }
     }
 
     fun saveMilkEntry(profile: UserProfile, input: MilkEntryInput) {
@@ -82,13 +94,47 @@ class SupabaseClient {
             .put("user_id", profile.id)
             .put("entry_date", LocalDate.now().toString())
             .put("entry_time", LocalTime.now().withNano(0).toString())
+            .put("producer_id", input.producerId)
             .put("supplier", input.supplier)
             .put("shift", input.shift)
             .put("liters", input.liters)
             .put("notes", input.notes.ifBlank { JSONObject.NULL })
-        body.put("temperature", input.temperature ?: JSONObject.NULL)
-        body.put("fat_percentage", input.fatPercentage ?: JSONObject.NULL)
         request("/rest/v1/milk_entries", "POST", body)
+    }
+
+    fun listProducers(activeOnly: Boolean = false): List<Producer> {
+        val filter = if (activeOnly) "&active=eq.true" else ""
+        val result = requestArray("/rest/v1/producers?select=id,name,document,phone,community,active$filter&order=name.asc")
+        return (0 until result.length()).map { index ->
+            val item = result.getJSONObject(index)
+            Producer(
+                id = item.getLong("id"),
+                name = item.getString("name"),
+                document = if (item.isNull("document")) "" else item.getString("document"),
+                phone = if (item.isNull("phone")) "" else item.getString("phone"),
+                community = if (item.isNull("community")) "" else item.getString("community"),
+                active = item.optBoolean("active", true)
+            )
+        }
+    }
+
+    fun createProducer(name: String, document: String, phone: String, community: String) {
+        val cooperative = cooperativeId ?: error("Sessão expirada")
+        request("/rest/v1/producers", "POST", JSONObject()
+            .put("cooperative_id", cooperative)
+            .put("name", name.trim())
+            .put("document", document.trim().ifBlank { JSONObject.NULL })
+            .put("phone", phone.trim().ifBlank { JSONObject.NULL })
+            .put("community", community.trim().ifBlank { JSONObject.NULL }))
+    }
+
+    fun updateProducer(id: Long, name: String, document: String, phone: String, community: String, active: Boolean) {
+        request("/rest/v1/producers?id=eq.$id", "PATCH", JSONObject()
+            .put("name", name.trim())
+            .put("document", document.trim().ifBlank { JSONObject.NULL })
+            .put("phone", phone.trim().ifBlank { JSONObject.NULL })
+            .put("community", community.trim().ifBlank { JSONObject.NULL })
+            .put("active", active))
     }
 
     fun listUsers(): List<UserProfile> {
@@ -164,6 +210,7 @@ class SupabaseClient {
 
     fun logout() {
         accessToken = null
+        cooperativeId = null
     }
 
     private fun requestArray(path: String): JSONArray {
