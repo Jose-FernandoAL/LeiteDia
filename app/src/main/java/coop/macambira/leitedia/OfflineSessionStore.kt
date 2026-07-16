@@ -5,7 +5,6 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import java.security.KeyStore
-import java.time.Instant
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -40,10 +39,9 @@ class OfflineSessionStore(context: Context) {
     fun restore(loginId: String, password: String): CachedSession? {
         val credentials = credentials() ?: return null
         if (!credentials.loginId.equals(loginId.trim(), ignoreCase = true) || credentials.password != password) return null
-        if (System.currentTimeMillis() - prefs.getLong("cached_at", 0) > 7L * 24 * 60 * 60 * 1000) return null
         val status = prefs.getString("license_status", "trial") ?: "trial"
         val trialEnd = prefs.getString("trial_ends_at", "").orEmpty()
-        val licenseActive = prefs.getBoolean("license_active", false) && (status == "full" || runCatching { Instant.parse(trialEnd).isAfter(Instant.now()) }.getOrDefault(false))
+        val licenseActive = AppRules.isOfflineSessionValid(prefs.getLong("cached_at", 0), status, trialEnd, prefs.getBoolean("license_active", false), System.currentTimeMillis())
         if (!licenseActive || !prefs.getBoolean("active", false)) return null
         return CachedSession(
             UserProfile(

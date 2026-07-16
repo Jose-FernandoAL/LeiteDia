@@ -312,10 +312,10 @@ private fun MilkEntryScreen(modifier: Modifier, profile: UserProfile, save: (Mil
         } else if (viewMode == 1) Column(Modifier.fillMaxSize()) {
             if (historyLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
             val today = LocalDate.now().toString()
-            val todayEntries = entries.filter { it.entryDate == today }
+            val todayTotals = AppRules.totals(entries, today)
             ElevatedCard(Modifier.fillMaxWidth()) { Column(Modifier.fillMaxWidth().padding(14.dp)) {
-                Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) { Text("Hoje", fontWeight = FontWeight.Bold); Text("%.2f L".format(todayEntries.sumOf { it.liters }), fontWeight = FontWeight.Bold) }
-                Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) { Text("Manhã: %.2f L".format(todayEntries.filter { it.shift.startsWith("Manh") }.sumOf { it.liters })); Text("Tarde: %.2f L".format(todayEntries.filter { it.shift.startsWith("Tarde") }.sumOf { it.liters })) }
+                Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) { Text("Hoje", fontWeight = FontWeight.Bold); Text("%.2f L".format(todayTotals.liters), fontWeight = FontWeight.Bold) }
+                Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) { Text("Manhã: %.2f L".format(todayTotals.morning)); Text("Tarde: %.2f L".format(todayTotals.afternoon)) }
                 Text("Total carregado: ${entries.size} registros • %.2f L".format(entries.sumOf { it.liters }), style = MaterialTheme.typography.bodySmall)
             } }
             Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) { entries.forEach { entry -> Card(Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable { editingEntry = entry; editLiters = entry.liters.toString(); editShift = entry.shift; editNotes = entry.notes }) { Row(Modifier.fillMaxWidth().padding(12.dp), Arrangement.SpaceBetween) { Column { Text(entry.entryDate, fontWeight = FontWeight.Bold); Text("${entry.supplier} • ${entry.shift}"); Text("Toque para corrigir", style = MaterialTheme.typography.bodySmall) }; Text("%.2f L".format(entry.liters), fontWeight = FontWeight.Bold) } } }; if (!historyLoading && entries.isEmpty()) Text("Você ainda não possui registros.") }
@@ -325,7 +325,7 @@ private fun MilkEntryScreen(modifier: Modifier, profile: UserProfile, save: (Mil
         } else Column(Modifier.fillMaxSize()) {
             OutlinedTextField(producerSearch, { producerSearch = it }, label = { Text("Pesquisar produtor") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
-                producers.filter { producerSearch.isBlank() || it.name.contains(producerSearch, ignoreCase = true) || it.community.contains(producerSearch, ignoreCase = true) }.forEach { producer -> ElevatedCard(Modifier.fillMaxWidth().padding(vertical = 5.dp).clickable {
+                AppRules.filterProducers(producers, producerSearch).forEach { producer -> ElevatedCard(Modifier.fillMaxWidth().padding(vertical = 5.dp).clickable {
                     editingProducer = producer; producerName = producer.name; producerDocument = producer.document; producerPhone = producer.phone; producerCommunity = producer.community; producerActive = producer.active; showProducerDialog = true
                 }) { Row(Modifier.fillMaxWidth().padding(14.dp), Arrangement.SpaceBetween) { Column { Text(producer.name, fontWeight = FontWeight.Bold); Text(listOf(producer.community, producer.phone).filter { it.isNotBlank() }.joinToString(" • ").ifBlank { "Sem contato informado" }) }; Text(if (producer.active) "Ativo" else "Desativado", color = if (producer.active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error) } } }
                 if (producers.isEmpty()) Text("Cadastre seu primeiro produtor para começar os lançamentos.")
