@@ -174,6 +174,17 @@ class SupabaseClient {
         val result = requestArray(
             "/rest/v1/milk_entries?user_id=eq.$userId&select=id,entry_date,supplier,shift,liters,temperature,fat_percentage,notes&order=entry_date.desc"
         )
+        return parseEntries(result)
+    }
+
+    fun listCooperativeEntries(): List<MilkEntry> {
+        val result = requestArray(
+            "/rest/v1/milk_entries?select=id,entry_date,supplier,shift,liters,temperature,fat_percentage,notes&order=entry_date.desc&limit=5000"
+        )
+        return parseEntries(result)
+    }
+
+    private fun parseEntries(result: JSONArray): List<MilkEntry> {
         return (0 until result.length()).map { index ->
             val item = result.getJSONObject(index)
             MilkEntry(

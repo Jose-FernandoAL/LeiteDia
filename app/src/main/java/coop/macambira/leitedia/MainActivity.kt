@@ -62,6 +62,7 @@ private fun LeiteDiaApp(modifier: Modifier) {
         modifier, profile!!,
         loadUsers = { done -> Thread { val r = runCatching { client.listUsers() }; done(r.getOrNull(), r.exceptionOrNull()?.message) }.start() },
         loadEntries = { id, done -> Thread { val r = runCatching { client.listEntries(id) }; done(r.getOrNull(), r.exceptionOrNull()?.message) }.start() },
+        loadDashboard = { done -> Thread { val r = runCatching { client.listCooperativeEntries() }; done(r.getOrNull(), r.exceptionOrNull()?.message) }.start() },
         createUser = { id, name, pass, done -> Thread { done(runCatching { client.createUser(id, name, pass) }.exceptionOrNull()?.message) }.start() },
         updateUser = { id, login, name, active, pass, done -> Thread { done(runCatching { client.updateUser(id, login, name, active, pass) }.exceptionOrNull()?.message) }.start() },
         onLogout = { client.logout(); offlineSession.clear(); profile = null; onlineSession = false }
@@ -132,6 +133,7 @@ private fun AdminScreen(
     modifier: Modifier, admin: UserProfile,
     loadUsers: (((List<UserProfile>?, String?) -> Unit) -> Unit),
     loadEntries: (String, (List<MilkEntry>?, String?) -> Unit) -> Unit,
+    loadDashboard: ((List<MilkEntry>?, String?) -> Unit) -> Unit,
     createUser: (String, String, String, (String?) -> Unit) -> Unit,
     updateUser: (String, String, String, Boolean, String?, (String?) -> Unit) -> Unit,
     onLogout: () -> Unit
@@ -149,10 +151,12 @@ private fun AdminScreen(
     var credentials by remember { mutableStateOf<String?>(null) }
     var startDate by remember { mutableStateOf(LocalDate.now().minusDays(7).toString()) }
     var userSearch by remember { mutableStateOf("") }
+    var dashboardEntries by remember { mutableStateOf<List<MilkEntry>>(emptyList()) }
 
     fun refreshUsers() { loading = true; loadUsers { value, message -> users = value.orEmpty(); error = message; loading = false } }
+    fun refreshDashboard() { loadDashboard { value, message -> dashboardEntries = value.orEmpty(); if (message != null) error = message } }
     fun openUser(user: UserProfile) { selected = user; loading = true; loadEntries(user.id) { value, message -> entries = value.orEmpty(); error = message; loading = false } }
-    LaunchedEffect(Unit) { refreshUsers() }
+    LaunchedEffect(Unit) { refreshUsers(); refreshDashboard() }
 
     Column(modifier.fillMaxSize().padding(18.dp)) {
         Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
@@ -163,11 +167,16 @@ private fun AdminScreen(
         if (selected == null) {
             Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
                 Text("Usuários da cooperativa", fontWeight = FontWeight.Bold)
-                TextButton(onClick = { refreshUsers() }) { Text("Atualizar") }
+                TextButton(onClick = { refreshUsers(); refreshDashboard() }) { Text("Atualizar") }
             }
             if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            ElevatedCard(Modifier.fillMaxWidth().padding(bottom = 6.dp)) { Row(Modifier.fillMaxWidth().padding(12.dp), Arrangement.SpaceBetween) { Text("${users.count { it.active }} ativos"); Text("${users.size} usuários", fontWeight = FontWeight.Bold) } }
+            val totals = AppRules.totals(dashboardEntries, LocalDate.now().toString())
+            ElevatedCard(Modifier.fillMaxWidth().padding(bottom = 6.dp)) { Column(Modifier.fillMaxWidth().padding(12.dp)) {
+                Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) { Text("Produção de hoje", fontWeight = FontWeight.Bold); Text("%.2f L".format(totals.liters), fontWeight = FontWeight.Bold) }
+                Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) { Text("Manhã: %.2f L".format(totals.morning)); Text("Tarde: %.2f L".format(totals.afternoon)) }
+                Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) { Text("${totals.entries} lançamentos"); Text("${users.count { it.active }} de ${users.size} usuários ativos") }
+            } }
             OutlinedTextField(userSearch, { userSearch = it }, label = { Text("Pesquisar por nome ou ID") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
                 users.filter { userSearch.isBlank() || it.fullName.contains(userSearch, ignoreCase = true) || it.loginId.contains(userSearch, ignoreCase = true) }.forEach { user -> ElevatedCard(Modifier.fillMaxWidth().padding(vertical = 5.dp).clickable { openUser(user) }) {
@@ -245,7 +254,7 @@ private fun LoginScreen(modifier: Modifier, loading: Boolean, error: String?, lo
             val text = Uri.encode("Olá! Gostaria de solicitar um acesso de teste de 7 dias ao LeiteDia para minha cooperativa.")
             context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/5587999190815?text=$text")))
         }, modifier = Modifier.fillMaxWidth()) { Text("Solicitar acesso de teste") }
-        Spacer(Modifier.height(12.dp)); Text("Versão 1.8 • teste gratuito", modifier = Modifier.align(Alignment.CenterHorizontally))
+        Spacer(Modifier.height(12.dp)); Text("Versão 1.9 • teste gratuito", modifier = Modifier.align(Alignment.CenterHorizontally))
     }
 }
 
