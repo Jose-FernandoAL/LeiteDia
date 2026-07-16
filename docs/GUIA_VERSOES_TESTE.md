@@ -10,6 +10,7 @@ Este guia registra as versões preservadas durante a rodada de melhorias da coop
 | 1.8 | `LeiteDia-1.8-Validacao.apk` | Bloqueio de lançamento duplicado online e offline | Teste salvo |
 | 1.9 | `LeiteDia-1.9-Painel-Admin.apk` | Painel consolidado diário do administrador | Teste salvo |
 | 2.0 RC | `LeiteDia-2.0-RC-Relatorios.apk` | Resumo CSV por período de até 366 dias | Candidata |
+| 2.1 RC | `LeiteDia-2.1-RC-Controles.apk` | Fechamentos, backup, auditoria e painel de sincronização | Candidata |
 
 ## Ordem de validação
 
@@ -18,6 +19,7 @@ Este guia registra as versões preservadas durante a rodada de melhorias da coop
 3. Instalar a 2.0 RC sobre a 1.9 e exportar o resumo de um período como usuário comum e como administrador para o usuário selecionado.
 4. Confirmar que a planilha oficial de oito dias continua disponível.
 5. Se houver erro impeditivo, retornar à versão 1.7 preservada.
+6. Depois de aplicar a migração operacional, instalar a 2.1 RC e seguir `docs/VERSAO_2_1_RC.md`.
 
 ## Regras preservadas
 

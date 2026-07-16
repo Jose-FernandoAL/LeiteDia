@@ -46,4 +46,18 @@ class AppRulesTest {
         assertFalse(AppRules.validReportPeriod(start, start.minusDays(1)))
         assertFalse(AppRules.validReportPeriod(start, start.plusDays(366)))
     }
+
+    @Test fun closedPeriodMustBeOrderedAndLimitedToOneYear() {
+        val start = LocalDate.parse("2026-07-01")
+        assertTrue(AppRules.validClosedPeriod(start, start.plusMonths(1)))
+        assertFalse(AppRules.validClosedPeriod(start, start.minusDays(1)))
+        assertFalse(AppRules.validClosedPeriod(start, start.plusYears(1)))
+    }
+
+    @Test fun activeClosureBlocksDatesButReopenedClosureDoesNot() {
+        val active = ClosedPeriod(1, "2026-07-01", "2026-07-31", "Fechamento mensal", "2026-08-01T00:00:00Z", null)
+        val reopened = active.copy(id = 2, startDate = "2026-06-01", endDate = "2026-06-30", reopenedAt = "2026-07-01T00:00:00Z")
+        assertTrue(AppRules.isDateClosed(LocalDate.parse("2026-07-15"), listOf(active, reopened)))
+        assertFalse(AppRules.isDateClosed(LocalDate.parse("2026-06-15"), listOf(active, reopened)))
+    }
 }

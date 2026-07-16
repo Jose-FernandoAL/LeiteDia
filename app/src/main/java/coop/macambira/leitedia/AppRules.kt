@@ -33,4 +33,11 @@ object AppRules {
 
     fun validReportPeriod(start: LocalDate?, end: LocalDate?): Boolean =
         start != null && end != null && !end.isBefore(start) && !end.isAfter(start.plusDays(365))
+
+    fun validClosedPeriod(start: LocalDate?, end: LocalDate?): Boolean =
+        start != null && end != null && !end.isBefore(start) && !end.isAfter(start.plusYears(1).minusDays(1))
+
+    fun isDateClosed(date: LocalDate, periods: List<ClosedPeriod>): Boolean = periods.any {
+        it.reopenedAt == null && !date.isBefore(LocalDate.parse(it.startDate)) && !date.isAfter(LocalDate.parse(it.endDate))
+    }
 }

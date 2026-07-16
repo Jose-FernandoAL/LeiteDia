@@ -15,8 +15,8 @@ android {
         applicationId = "coop.macambira.leitedia"
         minSdk = 24
         targetSdk = 36
-        versionCode = 11
-        versionName = "2.0-rc"
+        versionCode = 12
+        versionName = "2.1-rc"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

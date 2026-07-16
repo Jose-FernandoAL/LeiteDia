@@ -63,6 +63,19 @@ private fun LeiteDiaApp(modifier: Modifier) {
         loadUsers = { done -> Thread { val r = runCatching { client.listUsers() }; done(r.getOrNull(), r.exceptionOrNull()?.message) }.start() },
         loadEntries = { id, done -> Thread { val r = runCatching { client.listEntries(id) }; done(r.getOrNull(), r.exceptionOrNull()?.message) }.start() },
         loadDashboard = { done -> Thread { val r = runCatching { client.listCooperativeEntries() }; done(r.getOrNull(), r.exceptionOrNull()?.message) }.start() },
+        loadAudit = { id, done -> Thread { val r = runCatching { client.listAudit(id) }; done(r.getOrNull(), r.exceptionOrNull()?.message) }.start() },
+        loadClosedPeriods = { done -> Thread {
+            if (!onlineSession) { done(offline.cachedClosedPeriods(profile!!.cooperativeId), null); return@Thread }
+            val r = runCatching { client.listClosedPeriods() }
+            if (r.isSuccess) { offline.cacheClosedPeriods(profile!!.cooperativeId, r.getOrThrow()); done(r.getOrThrow(), null) }
+            else if (r.exceptionOrNull()?.isNetworkFailure() == true) done(offline.cachedClosedPeriods(profile!!.cooperativeId), null)
+            else done(null, r.exceptionOrNull()?.message)
+        }.start() },
+        closePeriod = { start, end, reason, done -> Thread { done(runCatching { client.closePeriod(start, end, reason) }.exceptionOrNull()?.message) }.start() },
+        reopenPeriod = { id, done -> Thread { done(runCatching { client.reopenPeriod(id) }.exceptionOrNull()?.message) }.start() },
+        loadBackups = { id, done -> Thread { val r = runCatching { client.listBackups(id) }; done(r.getOrNull(), r.exceptionOrNull()?.message) }.start() },
+        createBackup = { id, label, done -> Thread { val r = runCatching { client.createBackup(id, label) }; done(r.getOrNull(), r.exceptionOrNull()?.message) }.start() },
+        restoreBackup = { id, done -> Thread { val r = runCatching { client.restoreBackup(id) }; done(r.getOrNull(), r.exceptionOrNull()?.message) }.start() },
         createUser = { id, name, pass, done -> Thread { done(runCatching { client.createUser(id, name, pass) }.exceptionOrNull()?.message) }.start() },
         updateUser = { id, login, name, active, pass, done -> Thread { done(runCatching { client.updateUser(id, login, name, active, pass) }.exceptionOrNull()?.message) }.start() },
         onLogout = { client.logout(); offlineSession.clear(); profile = null; onlineSession = false }
@@ -110,11 +123,20 @@ private fun LeiteDiaApp(modifier: Modifier) {
             for (pending in offline.pending(profile!!.id)) {
                 val result = runCatching { client.saveMilkEntry(profile!!, pending.input) }
                 if (result.isSuccess) { offline.remove(pending.input.clientEntryId); sent++ }
-                else { failure = result.exceptionOrNull(); break }
+                else { failure = result.exceptionOrNull(); offline.markFailure(pending.input.clientEntryId, failure?.message ?: "Falha desconhecida"); break }
             }
             done(offline.pendingCount(profile!!.id), sent, failure?.takeUnless { it.isNetworkFailure() }?.message)
         }.start() },
         loadEntries = { done -> Thread { val r = runCatching { client.listEntries(profile!!.id) }; done(r.getOrNull(), r.exceptionOrNull()?.message) }.start() },
+        loadAudit = { done -> Thread { val r = runCatching { client.listAudit(profile!!.id) }; done(r.getOrNull(), r.exceptionOrNull()?.message) }.start() },
+        loadClosedPeriods = { done -> Thread {
+            if (!onlineSession) { done(offline.cachedClosedPeriods(profile!!.cooperativeId), null); return@Thread }
+            val r = runCatching { client.listClosedPeriods() }
+            if (r.isSuccess) { offline.cacheClosedPeriods(profile!!.cooperativeId, r.getOrThrow()); done(r.getOrThrow(), null) }
+            else if (r.exceptionOrNull()?.isNetworkFailure() == true) done(offline.cachedClosedPeriods(profile!!.cooperativeId), null)
+            else done(null, r.exceptionOrNull()?.message)
+        }.start() },
+        pendingItems = { offline.pending(profile!!.id) },
         updateEntry = { id, liters, shift, notes, done -> Thread { done(if (!onlineSession) "Conecte-se à internet para corrigir um lançamento." else runCatching { client.updateMilkEntry(id, liters, shift, notes) }.exceptionOrNull()?.message) }.start() },
         changePassword = { password, done -> Thread {
             val message = if (!onlineSession) "Conecte-se à internet para trocar a senha." else runCatching { client.changeOwnPassword(password) }.exceptionOrNull()?.message
@@ -134,6 +156,13 @@ private fun AdminScreen(
     loadUsers: (((List<UserProfile>?, String?) -> Unit) -> Unit),
     loadEntries: (String, (List<MilkEntry>?, String?) -> Unit) -> Unit,
     loadDashboard: ((List<MilkEntry>?, String?) -> Unit) -> Unit,
+    loadAudit: (String, (List<AuditRecord>?, String?) -> Unit) -> Unit,
+    loadClosedPeriods: ((List<ClosedPeriod>?, String?) -> Unit) -> Unit,
+    closePeriod: (String, String, String, (String?) -> Unit) -> Unit,
+    reopenPeriod: (Long, (String?) -> Unit) -> Unit,
+    loadBackups: (String, (List<DataBackup>?, String?) -> Unit) -> Unit,
+    createBackup: (String, String, (String?, String?) -> Unit) -> Unit,
+    restoreBackup: (String, (String?, String?) -> Unit) -> Unit,
     createUser: (String, String, String, (String?) -> Unit) -> Unit,
     updateUser: (String, String, String, Boolean, String?, (String?) -> Unit) -> Unit,
     onLogout: () -> Unit
@@ -153,16 +182,24 @@ private fun AdminScreen(
     var endDate by remember { mutableStateOf(LocalDate.now().toString()) }
     var userSearch by remember { mutableStateOf("") }
     var dashboardEntries by remember { mutableStateOf<List<MilkEntry>>(emptyList()) }
+    var showOperations by remember { mutableStateOf(false) }
+    var showAudit by remember { mutableStateOf(false) }
+    var auditRecords by remember { mutableStateOf<List<AuditRecord>>(emptyList()) }
+    var backups by remember { mutableStateOf<List<DataBackup>>(emptyList()) }
 
     fun refreshUsers() { loading = true; loadUsers { value, message -> users = value.orEmpty(); error = message; loading = false } }
     fun refreshDashboard() { loadDashboard { value, message -> dashboardEntries = value.orEmpty(); if (message != null) error = message } }
-    fun openUser(user: UserProfile) { selected = user; loading = true; loadEntries(user.id) { value, message -> entries = value.orEmpty(); error = message; loading = false } }
+    fun openUser(user: UserProfile) {
+        selected = user; loading = true
+        loadEntries(user.id) { value, message -> entries = value.orEmpty(); error = message; loading = false }
+        loadBackups(user.id) { value, _ -> backups = value.orEmpty() }
+    }
     LaunchedEffect(Unit) { refreshUsers(); refreshDashboard() }
 
     Column(modifier.fillMaxSize().padding(18.dp)) {
         Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
             Column { Text("Administração", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Text(admin.fullName) }
-            TextButton(onClick = onLogout) { Text("Sair") }
+            Row { TextButton(onClick = { showOperations = true }) { Text("Controles") }; TextButton(onClick = onLogout) { Text("Sair") } }
         }
         Spacer(Modifier.height(12.dp))
         if (selected == null) {
@@ -207,6 +244,11 @@ private fun AdminScreen(
             OutlinedTextField(endDate, { endDate = it }, label = { Text("Fim do resumo (AAAA-MM-DD)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             val parsedEnd = runCatching { LocalDate.parse(endDate) }.getOrNull()
             Button(onClick = { if (parsed != null && parsedEnd != null) SummaryExporter.share(context, user, entries, parsed, parsedEnd) }, enabled = AppRules.validReportPeriod(parsed, parsedEnd), modifier = Modifier.fillMaxWidth()) { Text("Exportar resumo do período") }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { loadAudit(user.id) { value, message -> auditRecords = value.orEmpty(); error = message; showAudit = message == null } }, modifier = Modifier.weight(1f)) { Text("Auditoria") }
+                OutlinedButton(onClick = { saving = true; createBackup(user.id, "Backup manual ${LocalDate.now()}") { _, message -> saving = false; error = message; if (message == null) loadBackups(user.id) { value, _ -> backups = value.orEmpty() } } }, enabled = !saving, modifier = Modifier.weight(1f)) { Text("Criar backup") }
+            }
+            backups.firstOrNull()?.let { backup -> TextButton(onClick = { saving = true; restoreBackup(backup.id) { message, failure -> saving = false; error = failure ?: message; if (failure == null) openUser(user) } }, enabled = !saving) { Text("Restaurar último backup (${backup.createdAt.take(10)})") } }
         }
     }
 
@@ -216,6 +258,63 @@ private fun AdminScreen(
     if (showEdit && selected != null) UserDialog("Gerenciar usuário", name, login, password, active, { name = it }, { login = it.uppercase() }, { password = it }, { active = it }, saving, {
         saving = true; updateUser(selected!!.id, login, name, active, password.ifBlank { null }) { message -> saving = false; if (message == null) { val updated = selected!!.copy(loginId = login, fullName = name, active = active); selected = updated; showEdit = false; refreshUsers() } else error = message }
     }, { showEdit = false }, editing = true)
+    if (showOperations) OperationalControlsDialog(loadClosedPeriods, closePeriod, reopenPeriod) { showOperations = false }
+    if (showAudit) AuditDialog(auditRecords) { showAudit = false }
+}
+
+@Composable
+private fun OperationalControlsDialog(
+    loadPeriods: ((List<ClosedPeriod>?, String?) -> Unit) -> Unit,
+    closePeriod: (String, String, String, (String?) -> Unit) -> Unit,
+    reopenPeriod: (Long, (String?) -> Unit) -> Unit,
+    dismiss: () -> Unit
+) {
+    var periods by remember { mutableStateOf<List<ClosedPeriod>>(emptyList()) }
+    var start by remember { mutableStateOf(LocalDate.now().withDayOfMonth(1).toString()) }
+    var end by remember { mutableStateOf(LocalDate.now().toString()) }
+    var reason by remember { mutableStateOf("") }
+    var loading by remember { mutableStateOf(true) }
+    var message by remember { mutableStateOf<String?>(null) }
+    fun refresh() { loading = true; loadPeriods { value, error -> periods = value.orEmpty(); message = error; loading = false } }
+    LaunchedEffect(Unit) { refresh() }
+    AlertDialog(
+        onDismissRequest = { if (!loading) dismiss() },
+        title = { Text("Fechamento de períodos") },
+        text = { Column(Modifier.verticalScroll(rememberScrollState())) {
+            Text("Depois do fechamento, lançamentos e correções dentro do período ficam bloqueados.")
+            OutlinedTextField(start, { start = it }, label = { Text("Início (AAAA-MM-DD)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(end, { end = it }, label = { Text("Fim (AAAA-MM-DD)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(reason, { reason = it }, label = { Text("Motivo") }, modifier = Modifier.fillMaxWidth())
+            val parsedStart = runCatching { LocalDate.parse(start) }.getOrNull()
+            val parsedEnd = runCatching { LocalDate.parse(end) }.getOrNull()
+            Button(onClick = { loading = true; closePeriod(start, end, reason) { error -> message = error ?: "Período fechado com sucesso."; if (error == null) { reason = ""; refresh() } else loading = false } },
+                enabled = !loading && AppRules.validClosedPeriod(parsedStart, parsedEnd), modifier = Modifier.fillMaxWidth()) { Text("Fechar período") }
+            message?.let { Text(it, color = if (it.contains("sucesso")) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error) }
+            if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+            periods.forEach { period -> ElevatedCard(Modifier.fillMaxWidth().padding(vertical = 4.dp)) { Column(Modifier.padding(12.dp)) {
+                Text("${period.startDate} até ${period.endDate}", fontWeight = FontWeight.Bold)
+                Text(period.reason.ifBlank { "Sem motivo informado" })
+                if (period.reopenedAt == null) TextButton(onClick = { loading = true; reopenPeriod(period.id) { error -> message = error ?: "Período reaberto com sucesso."; if (error == null) refresh() else loading = false } }) { Text("Reabrir período") }
+                else Text("Reaberto em ${period.reopenedAt.take(10)}", style = MaterialTheme.typography.bodySmall)
+            } }
+            }
+        } },
+        confirmButton = { TextButton(onClick = dismiss, enabled = !loading) { Text("Fechar") } }
+    )
+}
+
+@Composable
+private fun AuditDialog(records: List<AuditRecord>, dismiss: () -> Unit) {
+    AlertDialog(onDismissRequest = dismiss, title = { Text("Histórico de auditoria") }, text = { Column(Modifier.verticalScroll(rememberScrollState())) {
+        if (records.isEmpty()) Text("Nenhuma correção registrada para este usuário.")
+        records.forEach { record -> ElevatedCard(Modifier.fillMaxWidth().padding(vertical = 4.dp)) { Column(Modifier.padding(12.dp)) {
+            Text("Lançamento #${record.entryId} • ${record.changedAt.replace('T', ' ').take(16)}", fontWeight = FontWeight.Bold)
+            if (record.oldLiters != record.newLiters) Text("Litros: ${record.oldLiters ?: "—"} → ${record.newLiters ?: "—"}")
+            if (record.oldShift != record.newShift) Text("Turno: ${record.oldShift.ifBlank { "—" }} → ${record.newShift.ifBlank { "—" }}")
+            if (record.oldNotes != record.newNotes) Text("Observação alterada")
+            if (record.changedBy.isNotBlank()) Text("Responsável: ${record.changedBy.take(8)}…", style = MaterialTheme.typography.bodySmall)
+        } } }
+    } }, confirmButton = { TextButton(onClick = dismiss) { Text("Fechar") } })
 }
 
 @Composable
@@ -258,7 +357,7 @@ private fun LoginScreen(modifier: Modifier, loading: Boolean, error: String?, lo
             val text = Uri.encode("Olá! Gostaria de solicitar um acesso de teste de 7 dias ao LeiteDia para minha cooperativa.")
             context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/5587999190815?text=$text")))
         }, modifier = Modifier.fillMaxWidth()) { Text("Solicitar acesso de teste") }
-        Spacer(Modifier.height(12.dp)); Text("Versão 2.0 RC • teste gratuito", modifier = Modifier.align(Alignment.CenterHorizontally))
+        Spacer(Modifier.height(12.dp)); Text("Versão 2.1 RC • teste gratuito", modifier = Modifier.align(Alignment.CenterHorizontally))
     }
 }
 
@@ -286,6 +385,9 @@ private fun MilkEntryScreen(modifier: Modifier, profile: UserProfile, save: (Mil
     pendingCount: () -> Int,
     syncPending: ((Int, Int, String?) -> Unit) -> Unit,
     loadEntries: ((List<MilkEntry>?, String?) -> Unit) -> Unit,
+    loadAudit: ((List<AuditRecord>?, String?) -> Unit) -> Unit,
+    loadClosedPeriods: ((List<ClosedPeriod>?, String?) -> Unit) -> Unit,
+    pendingItems: () -> List<PendingMilkEntry>,
     updateEntry: (Long, Double, String, String, (String?) -> Unit) -> Unit,
     changePassword: (String, (String?) -> Unit) -> Unit,
     logout: () -> Unit) {
@@ -299,19 +401,28 @@ private fun MilkEntryScreen(modifier: Modifier, profile: UserProfile, save: (Mil
     var producerName by remember { mutableStateOf("") }; var producerDocument by remember { mutableStateOf("") }; var producerPhone by remember { mutableStateOf("") }; var producerCommunity by remember { mutableStateOf("") }; var producerActive by remember { mutableStateOf(true) }
     var editingEntry by remember { mutableStateOf<MilkEntry?>(null) }; var editLiters by remember { mutableStateOf("") }; var editShift by remember { mutableStateOf("Manhã") }; var editNotes by remember { mutableStateOf("") }
     var showPassword by remember { mutableStateOf(false) }; var newPassword by remember { mutableStateOf("") }; var confirmPassword by remember { mutableStateOf("") }
+    var auditRecords by remember { mutableStateOf<List<AuditRecord>>(emptyList()) }
+    var showAudit by remember { mutableStateOf(false) }
+    var closedPeriods by remember { mutableStateOf<List<ClosedPeriod>>(emptyList()) }
+    var syncItems by remember { mutableStateOf<List<PendingMilkEntry>>(emptyList()) }
     fun refreshHistory() { historyLoading = true; loadEntries { value, message -> entries = value.orEmpty(); status = message; historyLoading = false } }
     fun refreshProducers() { loadProducers { value, message -> producers = value.orEmpty(); selectedProducer = selectedProducer?.takeIf { selected -> value.orEmpty().any { it.id == selected.id && it.active } } ?: value?.firstOrNull { it.active }; status = message } }
-    fun synchronize(showMessage: Boolean = false) { if (syncing) return; syncing = true; syncPending { remaining, sent, message -> pending = remaining; syncing = false; if (showMessage) status = message ?: if (sent > 0) "$sent lançamento(s) sincronizado(s)." else if (remaining == 0) "Tudo sincronizado." else "Sem conexão. Os dados continuam salvos no celular." } }
+    fun synchronize(showMessage: Boolean = false) { if (syncing) return; syncing = true; syncPending { remaining, sent, message -> pending = remaining; syncItems = pendingItems(); syncing = false; if (showMessage) status = message ?: if (sent > 0) "$sent lançamento(s) sincronizado(s)." else if (remaining == 0) "Tudo sincronizado." else "Sem conexão. Os dados continuam salvos no celular." } }
     LaunchedEffect(Unit) {
         refreshProducers()
+        syncItems = pendingItems()
+        loadClosedPeriods { value, _ -> closedPeriods = value.orEmpty() }
         while (true) { synchronize(false); delay(30_000) }
     }
     Column(modifier.fillMaxSize().padding(20.dp)) {
-        Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) { Column { Text(listOf("Entrada de leite", "Meu histórico", "Meus produtores")[viewMode], style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Text(profile.fullName) }; Row { TextButton(onClick = { newPassword = ""; confirmPassword = ""; showPassword = true }) { Text("Senha") }; TextButton(onClick = logout) { Text("Sair") } } }
+        Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) { Column { Text(listOf("Entrada de leite", "Meu histórico", "Meus produtores", "Sincronização")[viewMode], style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Text(profile.fullName) }; Row { TextButton(onClick = { newPassword = ""; confirmPassword = ""; showPassword = true }) { Text("Senha") }; TextButton(onClick = logout) { Text("Sair") } } }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             FilterChip(viewMode == 0, { viewMode = 0; refreshProducers() }, { Text("Entrada") }, modifier = Modifier.weight(1f))
             FilterChip(viewMode == 1, { viewMode = 1; refreshHistory() }, { Text("Histórico") }, modifier = Modifier.weight(1f))
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             FilterChip(viewMode == 2, { viewMode = 2; refreshProducers() }, { Text("Produtores") }, modifier = Modifier.weight(1f))
+            FilterChip(viewMode == 3, { viewMode = 3; syncItems = pendingItems() }, { Text("Sincronização") }, modifier = Modifier.weight(1f))
         }
         Spacer(Modifier.height(10.dp))
         if (pending > 0 || syncing) ElevatedCard(Modifier.fillMaxWidth().padding(bottom = 8.dp)) { Row(Modifier.fillMaxWidth().padding(12.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
@@ -319,6 +430,8 @@ private fun MilkEntryScreen(modifier: Modifier, profile: UserProfile, save: (Mil
             TextButton(onClick = { synchronize(true) }, enabled = !syncing) { Text("Sincronizar") }
         } }
         if (viewMode == 0) Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+            val todayClosed = AppRules.isDateClosed(LocalDate.now(), closedPeriods)
+            if (todayClosed) ElevatedCard(Modifier.fillMaxWidth()) { Text("O período de hoje está fechado. Novos lançamentos e correções estão bloqueados.", color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(12.dp)) }
             Box {
                 OutlinedButton(onClick = { producerMenu = true }, modifier = Modifier.fillMaxWidth().height(56.dp)) { Text(selectedProducer?.name ?: "Selecionar produtor") }
                 DropdownMenu(expanded = producerMenu, onDismissRequest = { producerMenu = false }) {
@@ -330,7 +443,7 @@ private fun MilkEntryScreen(modifier: Modifier, profile: UserProfile, save: (Mil
             OutlinedTextField(liters, { value -> liters = value.filter { it.isDigit() || it == ',' || it == '.' } }, label = { Text("Litros") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth()); Spacer(Modifier.height(8.dp))
             Text("Turno", fontWeight = FontWeight.SemiBold); Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("Manhã", "Tarde").forEach { FilterChip(shift == it, { shift = it }, { Text(it) }, modifier = Modifier.weight(1f)) } }
             OutlinedTextField(notes, { notes = it }, label = { Text("Observações") }, modifier = Modifier.fillMaxWidth(), minLines = 3); Spacer(Modifier.height(14.dp))
-            Button(onClick = { val producer = selectedProducer ?: return@Button; saving = true; status = null; save(MilkEntryInput(producer.id, producer.name, liters.replace(',', '.').toDouble(), shift, notes.trim())) { result -> saving = false; if (result == "OFFLINE_SAVED") { pending = pendingCount(); status = "Sem internet: lançamento salvo no celular e aguardando sincronização."; liters = ""; notes = "" } else { status = result ?: "Entrada registrada com sucesso."; if (result == null) { liters = ""; notes = "" } } } }, enabled = !saving && selectedProducer != null && liters.replace(',', '.').toDoubleOrNull()?.let { it > 0 } == true, modifier = Modifier.fillMaxWidth().height(52.dp)) { Text(if (saving) "Salvando..." else "Salvar entrada") }
+            Button(onClick = { val producer = selectedProducer ?: return@Button; saving = true; status = null; save(MilkEntryInput(producer.id, producer.name, liters.replace(',', '.').toDouble(), shift, notes.trim())) { result -> saving = false; if (result == "OFFLINE_SAVED") { pending = pendingCount(); syncItems = pendingItems(); status = "Sem internet: lançamento salvo no celular e aguardando sincronização."; liters = ""; notes = "" } else { status = result ?: "Entrada registrada com sucesso."; if (result == null) { liters = ""; notes = "" } } } }, enabled = !todayClosed && !saving && selectedProducer != null && liters.replace(',', '.').toDoubleOrNull()?.let { it > 0 } == true, modifier = Modifier.fillMaxWidth().height(52.dp)) { Text(if (saving) "Salvando..." else "Salvar entrada") }
             status?.let { Text(it, color = if (it.contains("sucesso") || it.contains("salvo no celular") || it.contains("sincronizado") || it.contains("Tudo sincronizado")) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error) }
         } else if (viewMode == 1) Column(Modifier.fillMaxSize()) {
             if (historyLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -348,7 +461,8 @@ private fun MilkEntryScreen(modifier: Modifier, profile: UserProfile, save: (Mil
             OutlinedTextField(endDate, { endDate = it }, label = { Text("Fim do resumo (AAAA-MM-DD)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
             val parsedEnd = runCatching { LocalDate.parse(endDate) }.getOrNull()
             OutlinedButton(onClick = { if (parsed != null && parsedEnd != null) SummaryExporter.share(context, profile, entries, parsed, parsedEnd) }, enabled = entries.isNotEmpty() && AppRules.validReportPeriod(parsed, parsedEnd), modifier = Modifier.fillMaxWidth()) { Text("Compartilhar resumo do período") }
-        } else Column(Modifier.fillMaxSize()) {
+            TextButton(onClick = { loadAudit { value, message -> auditRecords = value.orEmpty(); status = message; showAudit = message == null } }, modifier = Modifier.fillMaxWidth()) { Text("Ver histórico de auditoria") }
+        } else if (viewMode == 2) Column(Modifier.fillMaxSize()) {
             OutlinedTextField(producerSearch, { producerSearch = it }, label = { Text("Pesquisar produtor") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
                 AppRules.filterProducers(producers, producerSearch).forEach { producer -> ElevatedCard(Modifier.fillMaxWidth().padding(vertical = 5.dp).clickable {
@@ -357,6 +471,18 @@ private fun MilkEntryScreen(modifier: Modifier, profile: UserProfile, save: (Mil
                 if (producers.isEmpty()) Text("Cadastre seu primeiro produtor para começar os lançamentos.")
             }
             Button(onClick = { editingProducer = null; producerName = ""; producerDocument = ""; producerPhone = ""; producerCommunity = ""; producerActive = true; showProducerDialog = true }, modifier = Modifier.fillMaxWidth()) { Text("Cadastrar produtor") }
+        } else Column(Modifier.fillMaxSize()) {
+            ElevatedCard(Modifier.fillMaxWidth()) { Column(Modifier.padding(14.dp)) {
+                Text(if (syncItems.isEmpty()) "Tudo sincronizado" else "${syncItems.size} lançamento(s) aguardando envio", fontWeight = FontWeight.Bold)
+                Text("O aplicativo tenta novamente automaticamente a cada 30 segundos.")
+                Button(onClick = { synchronize(true) }, enabled = !syncing, modifier = Modifier.fillMaxWidth()) { Text(if (syncing) "Sincronizando..." else "Tentar agora") }
+            } }
+            Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) { syncItems.forEach { item -> ElevatedCard(Modifier.fillMaxWidth().padding(vertical = 4.dp)) { Column(Modifier.padding(12.dp)) {
+                Text("${item.input.supplier} • ${item.input.entryDate} • ${item.input.shift}", fontWeight = FontWeight.Bold)
+                Text("%.2f L • ${item.attempts} tentativa(s)".format(item.input.liters))
+                if (item.lastError.isNotBlank()) Text("Último erro: ${item.lastError}", color = MaterialTheme.colorScheme.error)
+                else Text("Aguardando conexão", style = MaterialTheme.typography.bodySmall)
+            } } }; if (syncItems.isEmpty()) Text("Nenhum dado pendente neste aparelho.", modifier = Modifier.padding(top = 12.dp)) }
         }
     }
     if (showProducerDialog) ProducerDialog(editingProducer != null, producerName, producerDocument, producerPhone, producerCommunity, producerActive,
@@ -375,4 +501,5 @@ private fun MilkEntryScreen(modifier: Modifier, profile: UserProfile, save: (Mil
         OutlinedTextField(confirmPassword, { confirmPassword = it }, label = { Text("Confirmar nova senha") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
         if (confirmPassword.isNotEmpty() && newPassword != confirmPassword) Text("As senhas não coincidem.", color = MaterialTheme.colorScheme.error)
     } }, confirmButton = { Button(onClick = { saving = true; changePassword(newPassword) { message -> saving = false; status = message ?: "Senha alterada com sucesso."; if (message == null) showPassword = false } }, enabled = !saving && newPassword.length >= 6 && newPassword == confirmPassword) { Text(if (saving) "Alterando..." else "Alterar senha") } }, dismissButton = { TextButton(onClick = { showPassword = false }, enabled = !saving) { Text("Cancelar") } })
+    if (showAudit) AuditDialog(auditRecords) { showAudit = false }
 }
