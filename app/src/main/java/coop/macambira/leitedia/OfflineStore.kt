@@ -70,7 +70,7 @@ class OfflineStore(context: Context) : SQLiteOpenHelper(context, "leitedia_offli
     fun markFailure(clientId: String, message: String) {
         writableDatabase.execSQL(
             "update pending_entries set attempts=attempts+1,last_error=?,last_attempt_at=? where client_id=?",
-            arrayOf(message.take(300), System.currentTimeMillis(), clientId)
+            arrayOf<Any>(message.take(300), System.currentTimeMillis(), clientId)
         )
     }
     fun pendingCount(userId: String): Int = readableDatabase.rawQuery("select count(*) from pending_entries where user_id=?", arrayOf(userId)).use { if (it.moveToFirst()) it.getInt(0) else 0 }

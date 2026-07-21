@@ -1,6 +1,8 @@
 package coop.macambira.leitedia
 
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.content.Intent
 import android.net.Uri
 import androidx.activity.ComponentActivity
@@ -42,6 +44,11 @@ private fun LeiteDiaApp(modifier: Modifier) {
     val appContext = LocalContext.current.applicationContext
     val offline = remember { OfflineStore(appContext) }
     val offlineSession = remember { OfflineSessionStore(appContext) }
+    val mainHandler = remember { Handler(Looper.getMainLooper()) }
+    fun ui(block: () -> Unit) { if (Looper.myLooper() == Looper.getMainLooper()) block() else mainHandler.post(block) }
+    fun <A> safe1(callback: (A) -> Unit): (A) -> Unit = { a -> ui { callback(a) } }
+    fun <A, B> safe2(callback: (A, B) -> Unit): (A, B) -> Unit = { a, b -> ui { callback(a, b) } }
+    fun <A, B, C> safe3(callback: (A, B, C) -> Unit): (A, B, C) -> Unit = { a, b, c -> ui { callback(a, b, c) } }
     var profile by remember { mutableStateOf<UserProfile?>(null) }
     var license by remember { mutableStateOf<LicenseStatus?>(null) }
     var onlineSession by remember { mutableStateOf(false) }
@@ -51,43 +58,45 @@ private fun LeiteDiaApp(modifier: Modifier) {
         loading = true; error = null
         Thread {
             val result = runCatching { client.login(id, password) to client.getLicenseStatus() }
-            result.onSuccess {
-                profile = it.first; license = it.second; onlineSession = true
-                offlineSession.save(it.first, it.second, id, password)
-                runCatching { client.createBackup(it.first.id, "Automático diário ${LocalDate.now()}") }
+            result.onSuccess { success ->
+                offlineSession.save(success.first, success.second, id, password)
+                runCatching { client.createBackup(success.first.id, "Automático diário ${LocalDate.now()}") }
             }
+            ui {
+                result.onSuccess { success -> profile = success.first; license = success.second; onlineSession = true }
                 .onFailure { failure ->
                     val cached = if (failure.isNetworkFailure()) offlineSession.restore(id, password) else null
                     if (cached != null && cached.profile.role != "admin") { profile = cached.profile; license = cached.license; onlineSession = false }
                     else error = if (failure.isNetworkFailure()) "Sem internet e sem sessão offline válida neste aparelho." else failure.message
                 }
-            loading = false
+                loading = false
+            }
         }.start()
     } else if (license?.active == false) TrialExpiredScreen(modifier, license!!, { client.logout(); offlineSession.clear(); profile = null; license = null; onlineSession = false })
     else if (profile!!.role == "admin") AdminScreen(
         modifier, profile!!,
-        loadUsers = { done -> Thread { val r = runCatching { client.listUsers() }; done(r.getOrNull(), r.exceptionOrNull()?.message) }.start() },
-        loadEntries = { id, done -> Thread { val r = runCatching { client.listEntries(id) }; done(r.getOrNull(), r.exceptionOrNull()?.message) }.start() },
-        loadDashboard = { done -> Thread { val r = runCatching { client.listCooperativeEntries() }; done(r.getOrNull(), r.exceptionOrNull()?.message) }.start() },
-        loadAudit = { id, done -> Thread { val r = runCatching { client.listAudit(id) }; done(r.getOrNull(), r.exceptionOrNull()?.message) }.start() },
-        loadClosedPeriods = { done -> Thread {
+        loadUsers = { rawDone -> val done = safe2(rawDone); Thread { val r = runCatching { client.listUsers() }; done(r.getOrNull(), r.exceptionOrNull()?.message) }.start() },
+        loadEntries = { id, rawDone -> val done = safe2(rawDone); Thread { val r = runCatching { client.listEntries(id) }; done(r.getOrNull(), r.exceptionOrNull()?.message) }.start() },
+        loadDashboard = { rawDone -> val done = safe2(rawDone); Thread { val r = runCatching { client.listCooperativeEntries() }; done(r.getOrNull(), r.exceptionOrNull()?.message) }.start() },
+        loadAudit = { id, rawDone -> val done = safe2(rawDone); Thread { val r = runCatching { client.listAudit(id) }; done(r.getOrNull(), r.exceptionOrNull()?.message) }.start() },
+        loadClosedPeriods = { rawDone -> val done = safe2(rawDone); Thread {
             if (!onlineSession) { done(offline.cachedClosedPeriods(profile!!.cooperativeId), null); return@Thread }
             val r = runCatching { client.listClosedPeriods() }
             if (r.isSuccess) { offline.cacheClosedPeriods(profile!!.cooperativeId, r.getOrThrow()); done(r.getOrThrow(), null) }
             else if (r.exceptionOrNull()?.isNetworkFailure() == true) done(offline.cachedClosedPeriods(profile!!.cooperativeId), null)
             else done(null, r.exceptionOrNull()?.message)
         }.start() },
-        closePeriod = { start, end, reason, done -> Thread { done(runCatching { client.closePeriod(start, end, reason) }.exceptionOrNull()?.message) }.start() },
-        reopenPeriod = { id, done -> Thread { done(runCatching { client.reopenPeriod(id) }.exceptionOrNull()?.message) }.start() },
-        loadBackups = { id, done -> Thread { val r = runCatching { client.listBackups(id) }; done(r.getOrNull(), r.exceptionOrNull()?.message) }.start() },
-        createBackup = { id, label, done -> Thread { val r = runCatching { client.createBackup(id, label) }; done(r.getOrNull(), r.exceptionOrNull()?.message) }.start() },
-        restoreBackup = { id, done -> Thread { val r = runCatching { client.restoreBackup(id) }; done(r.getOrNull(), r.exceptionOrNull()?.message) }.start() },
-        createUser = { id, name, pass, done -> Thread { done(runCatching { client.createUser(id, name, pass) }.exceptionOrNull()?.message) }.start() },
-        updateUser = { id, login, name, active, pass, done -> Thread { done(runCatching { client.updateUser(id, login, name, active, pass) }.exceptionOrNull()?.message) }.start() },
+        closePeriod = { start, end, reason, rawDone -> val done = safe1(rawDone); Thread { done(runCatching { client.closePeriod(start, end, reason) }.exceptionOrNull()?.message) }.start() },
+        reopenPeriod = { id, rawDone -> val done = safe1(rawDone); Thread { done(runCatching { client.reopenPeriod(id) }.exceptionOrNull()?.message) }.start() },
+        loadBackups = { id, rawDone -> val done = safe2(rawDone); Thread { val r = runCatching { client.listBackups(id) }; done(r.getOrNull(), r.exceptionOrNull()?.message) }.start() },
+        createBackup = { id, label, rawDone -> val done = safe2(rawDone); Thread { val r = runCatching { client.createBackup(id, label) }; done(r.getOrNull(), r.exceptionOrNull()?.message) }.start() },
+        restoreBackup = { id, rawDone -> val done = safe2(rawDone); Thread { val r = runCatching { client.restoreBackup(id) }; done(r.getOrNull(), r.exceptionOrNull()?.message) }.start() },
+        createUser = { id, name, pass, rawDone -> val done = safe1(rawDone); Thread { done(runCatching { client.createUser(id, name, pass) }.exceptionOrNull()?.message) }.start() },
+        updateUser = { id, login, name, active, pass, rawDone -> val done = safe1(rawDone); Thread { done(runCatching { client.updateUser(id, login, name, active, pass) }.exceptionOrNull()?.message) }.start() },
         onLogout = { client.logout(); offlineSession.clear(); profile = null; onlineSession = false }
     ) else MilkEntryScreen(
         modifier, profile!!,
-        save = { input, done -> Thread {
+        save = { input, rawDone -> val done = safe1(rawDone); Thread {
             if (!onlineSession) {
                 if (offline.hasPending(profile!!.id, input)) done("Já existe um lançamento pendente para esse produtor e turno hoje.")
                 else { offline.queue(profile!!.id, input); done("OFFLINE_SAVED") }
@@ -101,17 +110,17 @@ private fun LeiteDiaApp(modifier: Modifier) {
             else if (failure.isNetworkFailure()) { offline.queue(profile!!.id, input); done("OFFLINE_SAVED") }
             else done(failure.message)
         }.start() },
-        loadProducers = { done -> Thread {
+        loadProducers = { rawDone -> val done = safe2(rawDone); Thread {
             if (!onlineSession) { done(offline.cachedProducers(profile!!.id), "Modo offline: usando produtores salvos neste celular."); return@Thread }
             val r = runCatching { client.listProducers() }
             if (r.isSuccess) { offline.cacheProducers(profile!!.id, r.getOrThrow()); done(r.getOrThrow(), null) }
             else if (r.exceptionOrNull()?.isNetworkFailure() == true) done(offline.cachedProducers(profile!!.id), "Modo offline: usando produtores salvos neste celular.")
             else done(null, r.exceptionOrNull()?.message)
         }.start() },
-        createProducer = { name, document, phone, community, done -> Thread { done(if (!onlineSession) "Conecte-se à internet para cadastrar produtores." else runCatching { client.createProducer(name, document, phone, community) }.exceptionOrNull()?.message) }.start() },
-        updateProducer = { id, name, document, phone, community, active, done -> Thread { done(if (!onlineSession) "Conecte-se à internet para alterar produtores." else runCatching { client.updateProducer(id, name, document, phone, community, active) }.exceptionOrNull()?.message) }.start() },
+        createProducer = { name, document, phone, community, rawDone -> val done = safe1(rawDone); Thread { done(if (!onlineSession) "Conecte-se à internet para cadastrar produtores." else runCatching { client.createProducer(name, document, phone, community) }.exceptionOrNull()?.message) }.start() },
+        updateProducer = { id, name, document, phone, community, active, rawDone -> val done = safe1(rawDone); Thread { done(if (!onlineSession) "Conecte-se à internet para alterar produtores." else runCatching { client.updateProducer(id, name, document, phone, community, active) }.exceptionOrNull()?.message) }.start() },
         pendingCount = { offline.pendingCount(profile!!.id) },
-        syncPending = { done -> Thread {
+        syncPending = { rawDone -> val done = safe3(rawDone); Thread {
             if (!onlineSession) {
                 val credentials = offlineSession.credentials()
                 val reconnect = runCatching {
@@ -119,8 +128,8 @@ private fun LeiteDiaApp(modifier: Modifier) {
                     val restoredProfile = client.login(credentials.loginId, credentials.password)
                     val restoredLicense = client.getLicenseStatus()
                     if (!restoredLicense.active) error("Período de teste encerrado")
-                    profile = restoredProfile; license = restoredLicense; onlineSession = true
                     offlineSession.save(restoredProfile, restoredLicense, credentials.loginId, credentials.password)
+                    ui { profile = restoredProfile; license = restoredLicense; onlineSession = true }
                 }
                 if (reconnect.isFailure) { done(offline.pendingCount(profile!!.id), 0, reconnect.exceptionOrNull()?.takeUnless { it.isNetworkFailure() }?.message); return@Thread }
             }
@@ -133,9 +142,9 @@ private fun LeiteDiaApp(modifier: Modifier) {
             }
             done(offline.pendingCount(profile!!.id), sent, failure?.takeUnless { it.isNetworkFailure() }?.message)
         }.start() },
-        loadEntries = { done -> Thread { val r = runCatching { client.listEntries(profile!!.id) }; done(r.getOrNull(), r.exceptionOrNull()?.message) }.start() },
-        loadAudit = { done -> Thread { val r = runCatching { client.listAudit(profile!!.id) }; done(r.getOrNull(), r.exceptionOrNull()?.message) }.start() },
-        loadClosedPeriods = { done -> Thread {
+        loadEntries = { rawDone -> val done = safe2(rawDone); Thread { val r = runCatching { client.listEntries(profile!!.id) }; done(r.getOrNull(), r.exceptionOrNull()?.message) }.start() },
+        loadAudit = { rawDone -> val done = safe2(rawDone); Thread { val r = runCatching { client.listAudit(profile!!.id) }; done(r.getOrNull(), r.exceptionOrNull()?.message) }.start() },
+        loadClosedPeriods = { rawDone -> val done = safe2(rawDone); Thread {
             if (!onlineSession) { done(offline.cachedClosedPeriods(profile!!.cooperativeId), null); return@Thread }
             val r = runCatching { client.listClosedPeriods() }
             if (r.isSuccess) { offline.cacheClosedPeriods(profile!!.cooperativeId, r.getOrThrow()); done(r.getOrThrow(), null) }
@@ -143,8 +152,8 @@ private fun LeiteDiaApp(modifier: Modifier) {
             else done(null, r.exceptionOrNull()?.message)
         }.start() },
         pendingItems = { offline.pending(profile!!.id) },
-        updateEntry = { id, liters, shift, notes, done -> Thread { done(if (!onlineSession) "Conecte-se à internet para corrigir um lançamento." else runCatching { client.updateMilkEntry(id, liters, shift, notes) }.exceptionOrNull()?.message) }.start() },
-        changePassword = { password, done -> Thread {
+        updateEntry = { id, liters, shift, notes, rawDone -> val done = safe1(rawDone); Thread { done(if (!onlineSession) "Conecte-se à internet para corrigir um lançamento." else runCatching { client.updateMilkEntry(id, liters, shift, notes) }.exceptionOrNull()?.message) }.start() },
+        changePassword = { password, rawDone -> val done = safe1(rawDone); Thread {
             val message = if (!onlineSession) "Conecte-se à internet para trocar a senha." else runCatching { client.changeOwnPassword(password) }.exceptionOrNull()?.message
             if (message == null) offlineSession.save(profile!!, license!!, profile!!.loginId, password)
             done(message)
@@ -433,7 +442,7 @@ private fun LoginScreen(modifier: Modifier, loading: Boolean, error: String?, lo
                 context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/5587999190815?text=$text")))
             }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) { Text("Solicitar acesso de teste") }
         } }
-        Spacer(Modifier.height(12.dp)); Text("Versão 2.2 Entrega RC • teste gratuito", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.align(Alignment.CenterHorizontally))
+        Spacer(Modifier.height(12.dp)); Text("Versão 2.2.0 • teste gratuito", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.align(Alignment.CenterHorizontally))
     }
 }
 

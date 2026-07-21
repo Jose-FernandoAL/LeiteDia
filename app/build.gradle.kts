@@ -3,6 +3,17 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+val releaseStoreFile = System.getenv("LEITEDIA_KEYSTORE_FILE")
+val releaseStorePassword = System.getenv("LEITEDIA_KEYSTORE_PASSWORD")
+val releaseKeyAlias = System.getenv("LEITEDIA_KEY_ALIAS")
+val releaseKeyPassword = System.getenv("LEITEDIA_KEY_PASSWORD")
+val hasReleaseSigning = listOf(
+    releaseStoreFile,
+    releaseStorePassword,
+    releaseKeyAlias,
+    releaseKeyPassword,
+).all { !it.isNullOrBlank() }
+
 android {
     namespace = "coop.macambira.leitedia"
     compileSdk {
@@ -13,19 +24,39 @@ android {
 
     defaultConfig {
         applicationId = "coop.macambira.leitedia"
-        minSdk = 24
+        minSdk = 26
         targetSdk = 36
-        versionCode = 13
-        versionName = "2.2-entrega-rc"
+        versionCode = 14
+        versionName = "2.2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("production") {
+                storeFile = file(releaseStoreFile!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+                enableV1Signing = true
+                enableV2Signing = true
+                enableV3Signing = true
+                enableV4Signing = true
+            }
+        }
+    }
     buildTypes {
         release {
-            optimization {
-                enable = false
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("production")
             }
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
         }
     }
     compileOptions {
@@ -36,7 +67,11 @@ android {
         compose = true
     }
     lint {
-        checkReleaseBuilds = false
+        checkReleaseBuilds = true
+        abortOnError = true
+        // API 36 é o alvo estável instalado; o SDK preview 36.1 não pode ser
+        // declarado como targetSdk inteiro e gera este aviso incorreto.
+        disable += "OldTargetApi"
     }
 }
 

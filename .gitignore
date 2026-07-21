@@ -18,5 +18,6 @@ local.properties
 *.jks
 *.keystore
 keystore.properties
+/private-signing/
 *.aab
 *.apk
