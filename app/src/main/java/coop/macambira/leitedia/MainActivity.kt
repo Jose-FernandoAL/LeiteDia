@@ -18,6 +18,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import coop.macambira.leitedia.ui.theme.LeiteDiaTheme
@@ -30,7 +32,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        setContent { LeiteDiaTheme { Scaffold { LeiteDiaApp(Modifier.padding(it)) } } }
+        setContent { LeiteDiaTheme { Scaffold(containerColor = MaterialTheme.colorScheme.background) { LeiteDiaApp(Modifier.padding(it)) } } }
     }
 }
 
@@ -49,7 +51,11 @@ private fun LeiteDiaApp(modifier: Modifier) {
         loading = true; error = null
         Thread {
             val result = runCatching { client.login(id, password) to client.getLicenseStatus() }
-            result.onSuccess { profile = it.first; license = it.second; onlineSession = true; offlineSession.save(it.first, it.second, id, password) }
+            result.onSuccess {
+                profile = it.first; license = it.second; onlineSession = true
+                offlineSession.save(it.first, it.second, id, password)
+                runCatching { client.createBackup(it.first.id, "Automático diário ${LocalDate.now()}") }
+            }
                 .onFailure { failure ->
                     val cached = if (failure.isNetworkFailure()) offlineSession.restore(id, password) else null
                     if (cached != null && cached.profile.role != "admin") { profile = cached.profile; license = cached.license; onlineSession = false }
@@ -151,6 +157,39 @@ private fun Throwable.isNetworkFailure(): Boolean = generateSequence(this as Thr
     .any { it is IOException }
 
 @Composable
+private fun BrandHeader(title: String, subtitle: String, actions: @Composable RowScope.() -> Unit = {}) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = Color(0xFF071A33),
+        contentColor = Color.White,
+        shape = RoundedCornerShape(18.dp),
+        shadowElevation = 5.dp
+    ) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Surface(color = Color(0xFF1267D6), shape = RoundedCornerShape(10.dp)) {
+                    Text("LD", fontWeight = FontWeight.Black, modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp))
+                }
+                Spacer(Modifier.width(11.dp))
+                Column { Text(title, style = MaterialTheme.typography.titleLarge, color = Color.White); Text(subtitle, style = MaterialTheme.typography.bodySmall, color = Color(0xFFB8C8DC)) }
+            }
+            Row(content = actions)
+        }
+    }
+}
+
+@Composable
+private fun DashboardMetric(label: String, value: String, detail: String, modifier: Modifier = Modifier) {
+    ElevatedCard(modifier, shape = RoundedCornerShape(16.dp), elevation = CardDefaults.elevatedCardElevation(defaultElevation = 2.dp)) {
+        Column(Modifier.padding(14.dp)) {
+            Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(value, style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.primary)
+            Text(detail, style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+@Composable
 private fun AdminScreen(
     modifier: Modifier, admin: UserProfile,
     loadUsers: (((List<UserProfile>?, String?) -> Unit) -> Unit),
@@ -186,6 +225,8 @@ private fun AdminScreen(
     var showAudit by remember { mutableStateOf(false) }
     var auditRecords by remember { mutableStateOf<List<AuditRecord>>(emptyList()) }
     var backups by remember { mutableStateOf<List<DataBackup>>(emptyList()) }
+    var restoreCandidate by remember { mutableStateOf<DataBackup?>(null) }
+    var notice by remember { mutableStateOf<String?>(null) }
 
     fun refreshUsers() { loading = true; loadUsers { value, message -> users = value.orEmpty(); error = message; loading = false } }
     fun refreshDashboard() { loadDashboard { value, message -> dashboardEntries = value.orEmpty(); if (message != null) error = message } }
@@ -197,9 +238,9 @@ private fun AdminScreen(
     LaunchedEffect(Unit) { refreshUsers(); refreshDashboard() }
 
     Column(modifier.fillMaxSize().padding(18.dp)) {
-        Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
-            Column { Text("Administração", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Text(admin.fullName) }
-            Row { TextButton(onClick = { showOperations = true }) { Text("Controles") }; TextButton(onClick = onLogout) { Text("Sair") } }
+        BrandHeader("Painel", admin.fullName) {
+            TextButton(onClick = { showOperations = true }) { Text("Controles", color = Color.White) }
+            TextButton(onClick = onLogout) { Text("Sair", color = Color.White) }
         }
         Spacer(Modifier.height(12.dp))
         if (selected == null) {
@@ -209,12 +250,17 @@ private fun AdminScreen(
             }
             if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            notice?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
             val totals = AppRules.totals(dashboardEntries, LocalDate.now().toString())
-            ElevatedCard(Modifier.fillMaxWidth().padding(bottom = 6.dp)) { Column(Modifier.fillMaxWidth().padding(12.dp)) {
-                Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) { Text("Produção de hoje", fontWeight = FontWeight.Bold); Text("%.2f L".format(totals.liters), fontWeight = FontWeight.Bold) }
-                Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) { Text("Manhã: %.2f L".format(totals.morning)); Text("Tarde: %.2f L".format(totals.afternoon)) }
-                Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) { Text("${totals.entries} lançamentos"); Text("${users.count { it.active }} de ${users.size} usuários ativos") }
-            } }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                DashboardMetric("Produção", "%.1f L".format(totals.liters), "hoje", Modifier.weight(1f))
+                DashboardMetric("Coletas", totals.entries.toString(), "lançamentos", Modifier.weight(1f))
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                DashboardMetric("Manhã", "%.1f L".format(totals.morning), "primeiro turno", Modifier.weight(1f))
+                DashboardMetric("Usuários", users.count { it.active }.toString(), "${users.size} cadastrados", Modifier.weight(1f))
+            }
             OutlinedTextField(userSearch, { userSearch = it }, label = { Text("Pesquisar por nome ou ID") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
                 users.filter { userSearch.isBlank() || it.fullName.contains(userSearch, ignoreCase = true) || it.loginId.contains(userSearch, ignoreCase = true) }.forEach { user -> ElevatedCard(Modifier.fillMaxWidth().padding(vertical = 5.dp).clickable { openUser(user) }) {
@@ -232,6 +278,7 @@ private fun AdminScreen(
             }
             if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            notice?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
             ElevatedCard(Modifier.fillMaxWidth()) { Row(Modifier.fillMaxWidth().padding(16.dp), Arrangement.SpaceBetween) { Text("${entries.size} registros"); Text("Total: %.2f L".format(entries.sumOf { it.liters }), fontWeight = FontWeight.Bold) } }
             Spacer(Modifier.height(8.dp))
             Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) { entries.forEach { entry -> Card(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
@@ -246,9 +293,9 @@ private fun AdminScreen(
             Button(onClick = { if (parsed != null && parsedEnd != null) SummaryExporter.share(context, user, entries, parsed, parsedEnd) }, enabled = AppRules.validReportPeriod(parsed, parsedEnd), modifier = Modifier.fillMaxWidth()) { Text("Exportar resumo do período") }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = { loadAudit(user.id) { value, message -> auditRecords = value.orEmpty(); error = message; showAudit = message == null } }, modifier = Modifier.weight(1f)) { Text("Auditoria") }
-                OutlinedButton(onClick = { saving = true; createBackup(user.id, "Backup manual ${LocalDate.now()}") { _, message -> saving = false; error = message; if (message == null) loadBackups(user.id) { value, _ -> backups = value.orEmpty() } } }, enabled = !saving, modifier = Modifier.weight(1f)) { Text("Criar backup") }
+                OutlinedButton(onClick = { saving = true; error = null; notice = null; createBackup(user.id, "Backup manual ${LocalDate.now()}") { _, message -> saving = false; error = message; if (message == null) { notice = "Backup criado com sucesso."; loadBackups(user.id) { value, _ -> backups = value.orEmpty() } } } }, enabled = !saving, modifier = Modifier.weight(1f)) { Text("Criar backup") }
             }
-            backups.firstOrNull()?.let { backup -> TextButton(onClick = { saving = true; restoreBackup(backup.id) { message, failure -> saving = false; error = failure ?: message; if (failure == null) openUser(user) } }, enabled = !saving) { Text("Restaurar último backup (${backup.createdAt.take(10)})") } }
+            backups.firstOrNull()?.let { backup -> TextButton(onClick = { restoreCandidate = backup }, enabled = !saving) { Text("Restaurar último backup (${backup.createdAt.take(10)})") } }
         }
     }
 
@@ -260,6 +307,13 @@ private fun AdminScreen(
     }, { showEdit = false }, editing = true)
     if (showOperations) OperationalControlsDialog(loadClosedPeriods, closePeriod, reopenPeriod) { showOperations = false }
     if (showAudit) AuditDialog(auditRecords) { showAudit = false }
+    restoreCandidate?.let { backup -> AlertDialog(
+        onDismissRequest = { if (!saving) restoreCandidate = null },
+        title = { Text("Confirmar restauração") },
+        text = { Text("Restaurar o backup de ${backup.createdAt.take(10)}? Registros existentes não serão duplicados.") },
+        confirmButton = { Button(onClick = { saving = true; error = null; notice = null; restoreBackup(backup.id) { message, failure -> saving = false; if (failure == null) { notice = message ?: "Backup restaurado com sucesso."; restoreCandidate = null; selected?.let { openUser(it) } } else error = failure } }, enabled = !saving) { Text(if (saving) "Restaurando..." else "Restaurar") } },
+        dismissButton = { TextButton(onClick = { restoreCandidate = null }, enabled = !saving) { Text("Cancelar") } }
+    ) }
 }
 
 @Composable
@@ -275,6 +329,8 @@ private fun OperationalControlsDialog(
     var reason by remember { mutableStateOf("") }
     var loading by remember { mutableStateOf(true) }
     var message by remember { mutableStateOf<String?>(null) }
+    var confirmClose by remember { mutableStateOf(false) }
+    var reopenCandidate by remember { mutableStateOf<ClosedPeriod?>(null) }
     fun refresh() { loading = true; loadPeriods { value, error -> periods = value.orEmpty(); message = error; loading = false } }
     LaunchedEffect(Unit) { refresh() }
     AlertDialog(
@@ -287,20 +343,34 @@ private fun OperationalControlsDialog(
             OutlinedTextField(reason, { reason = it }, label = { Text("Motivo") }, modifier = Modifier.fillMaxWidth())
             val parsedStart = runCatching { LocalDate.parse(start) }.getOrNull()
             val parsedEnd = runCatching { LocalDate.parse(end) }.getOrNull()
-            Button(onClick = { loading = true; closePeriod(start, end, reason) { error -> message = error ?: "Período fechado com sucesso."; if (error == null) { reason = ""; refresh() } else loading = false } },
+            Button(onClick = { confirmClose = true },
                 enabled = !loading && AppRules.validClosedPeriod(parsedStart, parsedEnd), modifier = Modifier.fillMaxWidth()) { Text("Fechar período") }
             message?.let { Text(it, color = if (it.contains("sucesso")) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error) }
             if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
             periods.forEach { period -> ElevatedCard(Modifier.fillMaxWidth().padding(vertical = 4.dp)) { Column(Modifier.padding(12.dp)) {
                 Text("${period.startDate} até ${period.endDate}", fontWeight = FontWeight.Bold)
                 Text(period.reason.ifBlank { "Sem motivo informado" })
-                if (period.reopenedAt == null) TextButton(onClick = { loading = true; reopenPeriod(period.id) { error -> message = error ?: "Período reaberto com sucesso."; if (error == null) refresh() else loading = false } }) { Text("Reabrir período") }
+                if (period.reopenedAt == null) TextButton(onClick = { reopenCandidate = period }) { Text("Reabrir período") }
                 else Text("Reaberto em ${period.reopenedAt.take(10)}", style = MaterialTheme.typography.bodySmall)
             } }
             }
         } },
         confirmButton = { TextButton(onClick = dismiss, enabled = !loading) { Text("Fechar") } }
     )
+    if (confirmClose) AlertDialog(
+        onDismissRequest = { confirmClose = false },
+        title = { Text("Confirmar fechamento") },
+        text = { Text("Fechar o período de $start até $end? Lançamentos e correções nessas datas serão bloqueados.") },
+        confirmButton = { Button(onClick = { confirmClose = false; loading = true; closePeriod(start, end, reason) { error -> message = error ?: "Período fechado com sucesso."; if (error == null) { reason = ""; refresh() } else loading = false } }) { Text("Confirmar fechamento") } },
+        dismissButton = { TextButton(onClick = { confirmClose = false }) { Text("Cancelar") } }
+    )
+    reopenCandidate?.let { period -> AlertDialog(
+        onDismissRequest = { reopenCandidate = null },
+        title = { Text("Confirmar reabertura") },
+        text = { Text("Reabrir ${period.startDate} até ${period.endDate}? Os usuários voltarão a lançar e corrigir dados nesse período.") },
+        confirmButton = { Button(onClick = { reopenCandidate = null; loading = true; reopenPeriod(period.id) { error -> message = error ?: "Período reaberto com sucesso."; if (error == null) refresh() else loading = false } }) { Text("Reabrir") } },
+        dismissButton = { TextButton(onClick = { reopenCandidate = null }) { Text("Cancelar") } }
+    ) }
 }
 
 @Composable
@@ -346,18 +416,24 @@ private fun UserDialog(title: String, name: String, login: String, password: Str
 private fun LoginScreen(modifier: Modifier, loading: Boolean, error: String?, login: (String, String) -> Unit) {
     val context = LocalContext.current
     var id by remember { mutableStateOf("") }; var password by remember { mutableStateOf("") }
-    Column(modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center) {
-        Text("LeiteDia", style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold); Text("Cooperativa Macambira", style = MaterialTheme.typography.titleMedium); Spacer(Modifier.height(28.dp))
-        OutlinedTextField(id, { id = it }, label = { Text("ID do usuário") }, modifier = Modifier.fillMaxWidth(), singleLine = true); Spacer(Modifier.height(10.dp))
-        OutlinedTextField(password, { password = it }, label = { Text("Senha") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(), singleLine = true); Spacer(Modifier.height(18.dp))
-        Button(onClick = { login(id, password) }, enabled = !loading && id.isNotBlank() && password.isNotBlank(), modifier = Modifier.fillMaxWidth().height(52.dp)) { Text(if (loading) "Conectando..." else "Entrar") }
-        error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        Spacer(Modifier.height(10.dp))
-        OutlinedButton(onClick = {
-            val text = Uri.encode("Olá! Gostaria de solicitar um acesso de teste de 7 dias ao LeiteDia para minha cooperativa.")
-            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/5587999190815?text=$text")))
-        }, modifier = Modifier.fillMaxWidth()) { Text("Solicitar acesso de teste") }
-        Spacer(Modifier.height(12.dp)); Text("Versão 2.1 RC • teste gratuito", modifier = Modifier.align(Alignment.CenterHorizontally))
+    Column(modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.Center) {
+        BrandHeader("LeiteDia", "Gestão inteligente da cooperativa")
+        Spacer(Modifier.height(16.dp))
+        ElevatedCard(shape = RoundedCornerShape(20.dp), elevation = CardDefaults.elevatedCardElevation(defaultElevation = 3.dp)) { Column(Modifier.padding(20.dp)) {
+            Text("Acessar painel", style = MaterialTheme.typography.headlineSmall)
+            Text("Entre com o ID fornecido pela cooperativa.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(18.dp))
+            OutlinedTextField(id, { id = it }, label = { Text("ID do usuário") }, modifier = Modifier.fillMaxWidth(), singleLine = true); Spacer(Modifier.height(10.dp))
+            OutlinedTextField(password, { password = it }, label = { Text("Senha") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(), singleLine = true); Spacer(Modifier.height(18.dp))
+            Button(onClick = { login(id, password) }, enabled = !loading && id.isNotBlank() && password.isNotBlank(), modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(12.dp)) { Text(if (loading) "Conectando..." else "Entrar") }
+            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(onClick = {
+                val text = Uri.encode("Olá! Gostaria de solicitar um acesso de teste de 7 dias ao LeiteDia para minha cooperativa.")
+                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/5587999190815?text=$text")))
+            }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) { Text("Solicitar acesso de teste") }
+        } }
+        Spacer(Modifier.height(12.dp)); Text("Versão 2.2 Entrega RC • teste gratuito", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.align(Alignment.CenterHorizontally))
     }
 }
 
@@ -415,7 +491,10 @@ private fun MilkEntryScreen(modifier: Modifier, profile: UserProfile, save: (Mil
         while (true) { synchronize(false); delay(30_000) }
     }
     Column(modifier.fillMaxSize().padding(20.dp)) {
-        Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) { Column { Text(listOf("Entrada de leite", "Meu histórico", "Meus produtores", "Sincronização")[viewMode], style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Text(profile.fullName) }; Row { TextButton(onClick = { newPassword = ""; confirmPassword = ""; showPassword = true }) { Text("Senha") }; TextButton(onClick = logout) { Text("Sair") } } }
+        BrandHeader(listOf("Entrada de leite", "Meu histórico", "Meus produtores", "Sincronização")[viewMode], profile.fullName) {
+            TextButton(onClick = { newPassword = ""; confirmPassword = ""; showPassword = true }) { Text("Senha", color = Color.White) }
+            TextButton(onClick = logout) { Text("Sair", color = Color.White) }
+        }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             FilterChip(viewMode == 0, { viewMode = 0; refreshProducers() }, { Text("Entrada") }, modifier = Modifier.weight(1f))
             FilterChip(viewMode == 1, { viewMode = 1; refreshHistory() }, { Text("Histórico") }, modifier = Modifier.weight(1f))

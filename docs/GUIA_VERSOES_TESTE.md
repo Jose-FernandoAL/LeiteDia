@@ -11,6 +11,7 @@ Este guia registra as versões preservadas durante a rodada de melhorias da coop
 | 1.9 | `LeiteDia-1.9-Painel-Admin.apk` | Painel consolidado diário do administrador | Teste salvo |
 | 2.0 RC | `LeiteDia-2.0-RC-Relatorios.apk` | Resumo CSV por período de até 366 dias | Candidata |
 | 2.1 RC | `LeiteDia-2.1-RC-Controles.apk` | Fechamentos, backup, auditoria e painel de sincronização | Candidata |
+| 2.2 Entrega RC | `LeiteDia-2.2-Entrega-RC-Novo-Visual.apk` | Novo visual, confirmações e backup diário sem duplicação | Candidata de entrega |
 
 ## Ordem de validação
 
