@@ -54,12 +54,47 @@ private fun LeiteDiaApp(modifier: Modifier) {
     var onlineSession by remember { mutableStateOf(false) }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    if (profile == null) LoginScreen(modifier, loading, error) { id, password ->
+    var autoLoginChecked by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        val credentials = offlineSession.credentialsForAutoLogin()
+        if (credentials == null) {
+            autoLoginChecked = true
+        } else {
+            loading = true
+            Thread {
+                val result = runCatching { client.login(credentials.loginId, credentials.password) to client.getLicenseStatus() }
+                result.onSuccess { success ->
+                    offlineSession.save(success.first, success.second, credentials.loginId, credentials.password)
+                    runCatching { client.createBackup(success.first.id, "Automático diário ${LocalDate.now()}") }
+                }
+                ui {
+                    result.onSuccess { success ->
+                        profile = success.first
+                        license = success.second
+                        onlineSession = true
+                    }.onFailure { failure ->
+                        val cached = if (failure.isNetworkFailure()) offlineSession.restore(credentials.loginId, credentials.password) else null
+                        if (cached != null && cached.profile.role != "admin") {
+                            profile = cached.profile
+                            license = cached.license
+                            onlineSession = false
+                        } else {
+                            error = if (failure.isNetworkFailure()) "Sem internet e sem sessão offline válida neste aparelho." else "Não foi possível restaurar a sessão. Entre novamente."
+                        }
+                    }
+                    loading = false
+                    autoLoginChecked = true
+                }
+            }.start()
+        }
+    }
+    if (!autoLoginChecked) LoginScreen(modifier, true, null) { _, _, _ -> }
+    else if (profile == null) LoginScreen(modifier, loading, error) { id, password, keepLoggedIn ->
         loading = true; error = null
         Thread {
             val result = runCatching { client.login(id, password) to client.getLicenseStatus() }
             result.onSuccess { success ->
-                offlineSession.save(success.first, success.second, id, password)
+                offlineSession.save(success.first, success.second, id, password, keepLoggedIn)
                 runCatching { client.createBackup(success.first.id, "Automático diário ${LocalDate.now()}") }
             }
             ui {
@@ -422,27 +457,40 @@ private fun UserDialog(title: String, name: String, login: String, password: Str
 }
 
 @Composable
-private fun LoginScreen(modifier: Modifier, loading: Boolean, error: String?, login: (String, String) -> Unit) {
+private fun LoginScreen(modifier: Modifier, loading: Boolean, error: String?, login: (String, String, Boolean) -> Unit) {
     val context = LocalContext.current
     var id by remember { mutableStateOf("") }; var password by remember { mutableStateOf("") }
-    Column(modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.Center) {
-        BrandHeader("LeiteDia", "Gestão inteligente da cooperativa")
-        Spacer(Modifier.height(16.dp))
+    var keepLoggedIn by remember { mutableStateOf(true) }
+    Column(modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+        Text("●  Conectado à internet", color = Color(0xFF168A55), style = MaterialTheme.typography.bodySmall)
+        Spacer(Modifier.height(14.dp))
+        Surface(color = Color(0xFF2E6AEF), shape = RoundedCornerShape(22.dp)) { Text("◉", color = Color.White, style = MaterialTheme.typography.headlineMedium, modifier = Modifier.padding(16.dp)) }
+        Spacer(Modifier.height(10.dp))
+        Text("LeiteDia", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Black, color = Color(0xFF12366F))
+        Text("Gestão de coleta de leite", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.height(22.dp))
         ElevatedCard(shape = RoundedCornerShape(20.dp), elevation = CardDefaults.elevatedCardElevation(defaultElevation = 3.dp)) { Column(Modifier.padding(20.dp)) {
-            Text("Acessar painel", style = MaterialTheme.typography.headlineSmall)
+            Text("Acessar sua conta", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             Text("Entre com o ID fornecido pela cooperativa.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(Modifier.height(18.dp))
+            Spacer(Modifier.height(16.dp))
             OutlinedTextField(id, { id = it }, label = { Text("ID do usuário") }, modifier = Modifier.fillMaxWidth(), singleLine = true); Spacer(Modifier.height(10.dp))
-            OutlinedTextField(password, { password = it }, label = { Text("Senha") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(), singleLine = true); Spacer(Modifier.height(18.dp))
-            Button(onClick = { login(id, password) }, enabled = !loading && id.isNotBlank() && password.isNotBlank(), modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(12.dp)) { Text(if (loading) "Conectando..." else "Entrar") }
-            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            OutlinedTextField(password, { password = it }, label = { Text("Senha") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(), singleLine = true); Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().clickable(enabled = !loading) { keepLoggedIn = !keepLoggedIn }) {
+                Checkbox(checked = keepLoggedIn, onCheckedChange = { keepLoggedIn = it }, enabled = !loading)
+                Text("Manter conectado neste aparelho")
+            }
+            Spacer(Modifier.height(10.dp))
+            Button(onClick = { login(id, password, keepLoggedIn) }, enabled = !loading && id.isNotBlank() && password.isNotBlank(), modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(12.dp)) { Text(if (loading) "Conectando..." else "Entrar") }
+            error?.let { Spacer(Modifier.height(8.dp)); Text("⚠ $it", color = MaterialTheme.colorScheme.error) }
             Spacer(Modifier.height(8.dp))
             OutlinedButton(onClick = {
                 val text = Uri.encode("Olá! Gostaria de solicitar um acesso de teste de 7 dias ao LeiteDia para minha cooperativa.")
                 context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://wa.me/5587999190815?text=$text")))
-            }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) { Text("Solicitar acesso de teste") }
+            }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) { Text("★  Solicitar acesso de teste") }
+            Spacer(Modifier.height(10.dp))
+            Text("Teste gratuito por 7 dias — sem cartão", color = Color(0xFF168A55), modifier = Modifier.align(Alignment.CenterHorizontally), style = MaterialTheme.typography.bodySmall)
         } }
-        Spacer(Modifier.height(12.dp)); Text("Versão 2.2.0 • teste gratuito", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.align(Alignment.CenterHorizontally))
+        Spacer(Modifier.height(12.dp)); Text("LeiteDia 2.3.0 • Cooperativa Rural", color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -495,29 +543,52 @@ private fun MilkEntryScreen(modifier: Modifier, profile: UserProfile, save: (Mil
     fun synchronize(showMessage: Boolean = false) { if (syncing) return; syncing = true; syncPending { remaining, sent, message -> pending = remaining; syncItems = pendingItems(); syncing = false; if (showMessage) status = message ?: if (sent > 0) "$sent lançamento(s) sincronizado(s)." else if (remaining == 0) "Tudo sincronizado." else "Sem conexão. Os dados continuam salvos no celular." } }
     LaunchedEffect(Unit) {
         refreshProducers()
+        refreshHistory()
         syncItems = pendingItems()
         loadClosedPeriods { value, _ -> closedPeriods = value.orEmpty() }
         while (true) { synchronize(false); delay(30_000) }
     }
-    Column(modifier.fillMaxSize().padding(20.dp)) {
-        BrandHeader(listOf("Entrada de leite", "Meu histórico", "Meus produtores", "Sincronização")[viewMode], profile.fullName) {
+    Column(modifier.fillMaxSize()) {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
+        BrandHeader(listOf("Painel", "Produtores", "Registrar leite", "Histórico", "Mais")[viewMode], profile.fullName) {
             TextButton(onClick = { newPassword = ""; confirmPassword = ""; showPassword = true }) { Text("Senha", color = Color.White) }
             TextButton(onClick = logout) { Text("Sair", color = Color.White) }
-        }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(viewMode == 0, { viewMode = 0; refreshProducers() }, { Text("Entrada") }, modifier = Modifier.weight(1f))
-            FilterChip(viewMode == 1, { viewMode = 1; refreshHistory() }, { Text("Histórico") }, modifier = Modifier.weight(1f))
-        }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(viewMode == 2, { viewMode = 2; refreshProducers() }, { Text("Produtores") }, modifier = Modifier.weight(1f))
-            FilterChip(viewMode == 3, { viewMode = 3; syncItems = pendingItems() }, { Text("Sincronização") }, modifier = Modifier.weight(1f))
         }
         Spacer(Modifier.height(10.dp))
         if (pending > 0 || syncing) ElevatedCard(Modifier.fillMaxWidth().padding(bottom = 8.dp)) { Row(Modifier.fillMaxWidth().padding(12.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
             Text(if (syncing) "Sincronizando..." else "$pending lançamento(s) pendente(s)", fontWeight = FontWeight.SemiBold)
             TextButton(onClick = { synchronize(true) }, enabled = !syncing) { Text("Sincronizar") }
         } }
-        if (viewMode == 0) Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+        }
+        if (viewMode == 0) Column(Modifier.weight(1f).padding(horizontal = 16.dp).verticalScroll(rememberScrollState())) {
+            val todayTotals = AppRules.totals(entries, LocalDate.now().toString())
+            Button(
+                onClick = { viewMode = 2; refreshProducers() },
+                modifier = Modifier.fillMaxWidth().height(72.dp),
+                shape = RoundedCornerShape(18.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E6AEF))
+            ) { Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
+                Text("＋", style = MaterialTheme.typography.headlineMedium)
+                Column(Modifier.weight(1f).padding(horizontal = 10.dp)) { Text("Registrar leite", fontWeight = FontWeight.Bold); Text("Lançar nova coleta agora", style = MaterialTheme.typography.bodySmall) }
+                Text("›", style = MaterialTheme.typography.headlineMedium)
+            } }
+            Spacer(Modifier.height(14.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                DashboardMetric("Hoje", "%.1f L".format(todayTotals.liters), "litros coletados", Modifier.weight(1f))
+                DashboardMetric("Este mês", "%.1f L".format(entries.sumOf { it.liters }), "litros registrados", Modifier.weight(1f))
+            }
+            Spacer(Modifier.height(10.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                DashboardMetric("Produtores", producers.count { it.active }.toString(), "ativos", Modifier.weight(1f))
+                DashboardMetric("Pendentes", pending.toString(), "aguardando sync", Modifier.weight(1f))
+            }
+            Spacer(Modifier.height(18.dp))
+            Text("Últimas entradas", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            entries.take(5).forEach { entry -> ElevatedCard(Modifier.fillMaxWidth().padding(vertical = 4.dp), shape = RoundedCornerShape(16.dp)) {
+                Row(Modifier.fillMaxWidth().padding(14.dp), Arrangement.SpaceBetween) { Column { Text(entry.supplier, fontWeight = FontWeight.Bold); Text("${entry.shift} • ${entry.entryDate}", style = MaterialTheme.typography.bodySmall) }; Text("%.1f L".format(entry.liters), color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold) }
+            } }
+            if (!historyLoading && entries.isEmpty()) Text("Registre a primeira coleta para preencher seu painel.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        } else if (viewMode == 2) Column(Modifier.weight(1f).padding(horizontal = 16.dp).verticalScroll(rememberScrollState())) {
             val todayClosed = AppRules.isDateClosed(LocalDate.now(), closedPeriods)
             if (todayClosed) ElevatedCard(Modifier.fillMaxWidth()) { Text("O período de hoje está fechado. Novos lançamentos e correções estão bloqueados.", color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(12.dp)) }
             Box {
@@ -533,7 +604,7 @@ private fun MilkEntryScreen(modifier: Modifier, profile: UserProfile, save: (Mil
             OutlinedTextField(notes, { notes = it }, label = { Text("Observações") }, modifier = Modifier.fillMaxWidth(), minLines = 3); Spacer(Modifier.height(14.dp))
             Button(onClick = { val producer = selectedProducer ?: return@Button; saving = true; status = null; save(MilkEntryInput(producer.id, producer.name, liters.replace(',', '.').toDouble(), shift, notes.trim())) { result -> saving = false; if (result == "OFFLINE_SAVED") { pending = pendingCount(); syncItems = pendingItems(); status = "Sem internet: lançamento salvo no celular e aguardando sincronização."; liters = ""; notes = "" } else { status = result ?: "Entrada registrada com sucesso."; if (result == null) { liters = ""; notes = "" } } } }, enabled = !todayClosed && !saving && selectedProducer != null && liters.replace(',', '.').toDoubleOrNull()?.let { it > 0 } == true, modifier = Modifier.fillMaxWidth().height(52.dp)) { Text(if (saving) "Salvando..." else "Salvar entrada") }
             status?.let { Text(it, color = if (it.contains("sucesso") || it.contains("salvo no celular") || it.contains("sincronizado") || it.contains("Tudo sincronizado")) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error) }
-        } else if (viewMode == 1) Column(Modifier.fillMaxSize()) {
+        } else if (viewMode == 3) Column(Modifier.weight(1f).padding(horizontal = 16.dp)) {
             if (historyLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
             val today = LocalDate.now().toString()
             val todayTotals = AppRules.totals(entries, today)
@@ -550,7 +621,7 @@ private fun MilkEntryScreen(modifier: Modifier, profile: UserProfile, save: (Mil
             val parsedEnd = runCatching { LocalDate.parse(endDate) }.getOrNull()
             OutlinedButton(onClick = { if (parsed != null && parsedEnd != null) SummaryExporter.share(context, profile, entries, parsed, parsedEnd) }, enabled = entries.isNotEmpty() && AppRules.validReportPeriod(parsed, parsedEnd), modifier = Modifier.fillMaxWidth()) { Text("Compartilhar resumo do período") }
             TextButton(onClick = { loadAudit { value, message -> auditRecords = value.orEmpty(); status = message; showAudit = message == null } }, modifier = Modifier.fillMaxWidth()) { Text("Ver histórico de auditoria") }
-        } else if (viewMode == 2) Column(Modifier.fillMaxSize()) {
+        } else if (viewMode == 1) Column(Modifier.weight(1f).padding(horizontal = 16.dp)) {
             OutlinedTextField(producerSearch, { producerSearch = it }, label = { Text("Pesquisar produtor") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
                 AppRules.filterProducers(producers, producerSearch).forEach { producer -> ElevatedCard(Modifier.fillMaxWidth().padding(vertical = 5.dp).clickable {
@@ -559,7 +630,7 @@ private fun MilkEntryScreen(modifier: Modifier, profile: UserProfile, save: (Mil
                 if (producers.isEmpty()) Text("Cadastre seu primeiro produtor para começar os lançamentos.")
             }
             Button(onClick = { editingProducer = null; producerName = ""; producerDocument = ""; producerPhone = ""; producerCommunity = ""; producerActive = true; showProducerDialog = true }, modifier = Modifier.fillMaxWidth()) { Text("Cadastrar produtor") }
-        } else Column(Modifier.fillMaxSize()) {
+        } else Column(Modifier.weight(1f).padding(horizontal = 16.dp)) {
             ElevatedCard(Modifier.fillMaxWidth()) { Column(Modifier.padding(14.dp)) {
                 Text(if (syncItems.isEmpty()) "Tudo sincronizado" else "${syncItems.size} lançamento(s) aguardando envio", fontWeight = FontWeight.Bold)
                 Text("O aplicativo tenta novamente automaticamente a cada 30 segundos.")
@@ -571,6 +642,13 @@ private fun MilkEntryScreen(modifier: Modifier, profile: UserProfile, save: (Mil
                 if (item.lastError.isNotBlank()) Text("Último erro: ${item.lastError}", color = MaterialTheme.colorScheme.error)
                 else Text("Aguardando conexão", style = MaterialTheme.typography.bodySmall)
             } } }; if (syncItems.isEmpty()) Text("Nenhum dado pendente neste aparelho.", modifier = Modifier.padding(top = 12.dp)) }
+        }
+        NavigationBar(containerColor = Color.White, tonalElevation = 8.dp) {
+            UxNavItem(viewMode == 0, "⌂", "Painel") { viewMode = 0; refreshHistory() }
+            UxNavItem(viewMode == 1, "♟", "Produtores") { viewMode = 1; refreshProducers() }
+            UxNavItem(viewMode == 2, "+", "Registrar") { viewMode = 2; refreshProducers() }
+            UxNavItem(viewMode == 3, "↶", "Histórico") { viewMode = 3; refreshHistory() }
+            UxNavItem(viewMode == 4, "•••", "Mais") { viewMode = 4; syncItems = pendingItems() }
         }
     }
     if (showProducerDialog) ProducerDialog(editingProducer != null, producerName, producerDocument, producerPhone, producerCommunity, producerActive,
@@ -590,4 +668,21 @@ private fun MilkEntryScreen(modifier: Modifier, profile: UserProfile, save: (Mil
         if (confirmPassword.isNotEmpty() && newPassword != confirmPassword) Text("As senhas não coincidem.", color = MaterialTheme.colorScheme.error)
     } }, confirmButton = { Button(onClick = { saving = true; changePassword(newPassword) { message -> saving = false; status = message ?: "Senha alterada com sucesso."; if (message == null) showPassword = false } }, enabled = !saving && newPassword.length >= 6 && newPassword == confirmPassword) { Text(if (saving) "Alterando..." else "Alterar senha") } }, dismissButton = { TextButton(onClick = { showPassword = false }, enabled = !saving) { Text("Cancelar") } })
     if (showAudit) AuditDialog(auditRecords) { showAudit = false }
+}
+
+@Composable
+private fun RowScope.UxNavItem(selected: Boolean, symbol: String, label: String, action: () -> Unit) {
+    NavigationBarItem(
+        selected = selected,
+        onClick = action,
+        icon = { Text(symbol, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) },
+        label = { Text(label, maxLines = 1) },
+        colors = NavigationBarItemDefaults.colors(
+            selectedIconColor = Color.White,
+            selectedTextColor = Color(0xFF2E6AEF),
+            indicatorColor = Color(0xFF2E6AEF),
+            unselectedIconColor = Color(0xFF8A98AB),
+            unselectedTextColor = Color(0xFF8A98AB),
+        ),
+    )
 }

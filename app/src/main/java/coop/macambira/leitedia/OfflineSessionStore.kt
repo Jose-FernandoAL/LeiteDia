@@ -17,8 +17,15 @@ class OfflineSessionStore(context: Context) {
     private val prefs = context.getSharedPreferences("leitedia_secure_session", Context.MODE_PRIVATE)
     private val alias = "leitedia_offline_session"
 
-    fun save(profile: UserProfile, license: LicenseStatus, loginId: String, password: String) {
+    fun save(
+        profile: UserProfile,
+        license: LicenseStatus,
+        loginId: String,
+        password: String,
+        keepLoggedIn: Boolean? = null,
+    ) {
         val encrypted = encrypt(password)
+        val autoLogin = keepLoggedIn ?: shouldAutoLogin()
         prefs.edit()
             .putString("login_id", loginId.trim().uppercase())
             .putString("password", encrypted.first)
@@ -33,6 +40,7 @@ class OfflineSessionStore(context: Context) {
             .putInt("days_remaining", license.daysRemaining)
             .putBoolean("license_active", license.active)
             .putLong("cached_at", System.currentTimeMillis())
+            .putBoolean("auto_login", autoLogin)
             .apply()
     }
 
@@ -62,6 +70,11 @@ class OfflineSessionStore(context: Context) {
         val iv = prefs.getString("iv", null) ?: return null
         return runCatching { CachedCredentials(login, decrypt(encrypted, iv)) }.getOrNull()
     }
+
+    fun credentialsForAutoLogin(): CachedCredentials? =
+        if (shouldAutoLogin()) credentials() else null
+
+    fun shouldAutoLogin(): Boolean = prefs.getBoolean("auto_login", false)
 
     fun clear() { prefs.edit().clear().apply() }
 

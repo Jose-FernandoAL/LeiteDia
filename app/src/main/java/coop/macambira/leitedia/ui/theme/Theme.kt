@@ -41,7 +41,7 @@ private val DarkColorScheme = darkColorScheme(
 
 @Composable
 fun LeiteDiaTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
+    darkTheme: Boolean = false,
     content: @Composable () -> Unit
 ) {
     MaterialTheme(
