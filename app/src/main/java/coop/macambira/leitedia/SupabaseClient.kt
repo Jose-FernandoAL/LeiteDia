@@ -6,6 +6,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.time.LocalDate
 import java.time.LocalTime
+import java.util.UUID
 
 data class UserProfile(
     val id: String,
@@ -17,12 +18,23 @@ data class UserProfile(
 )
 
 data class MilkEntryInput(
+    val producerId: Long,
     val supplier: String,
     val liters: Double,
     val shift: String,
-    val temperature: Double?,
-    val fatPercentage: Double?,
-    val notes: String
+    val notes: String,
+    val clientEntryId: String = UUID.randomUUID().toString(),
+    val entryDate: String = LocalDate.now().toString(),
+    val entryTime: String = LocalTime.now().withNano(0).toString()
+)
+
+data class Producer(
+    val id: Long,
+    val name: String,
+    val document: String,
+    val phone: String,
+    val community: String,
+    val active: Boolean
 )
 
 data class MilkEntry(
@@ -36,10 +48,49 @@ data class MilkEntry(
     val notes: String
 )
 
+data class LicenseStatus(
+    val status: String,
+    val trialEndsAt: String,
+    val daysRemaining: Int,
+    val active: Boolean
+)
+
+data class AuditRecord(
+    val id: Long,
+    val entryId: Long,
+    val changedBy: String,
+    val oldLiters: Double?,
+    val newLiters: Double?,
+    val oldShift: String,
+    val newShift: String,
+    val oldNotes: String,
+    val newNotes: String,
+    val changedAt: String
+)
+
+data class ClosedPeriod(
+    val id: Long,
+    val startDate: String,
+    val endDate: String,
+    val reason: String,
+    val closedAt: String,
+    val reopenedAt: String?
+)
+
+data class DataBackup(
+    val id: String,
+    val ownerUserId: String,
+    val label: String,
+    val createdAt: String,
+    val restoredAt: String?
+)
+
 class SupabaseClient {
     private val baseUrl = "https://lqrddudfczmmlqqkgnly.supabase.co"
     private val apiKey = "sb_publishable_VD6P1JIYMzr9fl-z0eQGLQ_Q4IhtaCK"
     private var accessToken: String? = null
+    private var cooperativeId: String? = null
+    private var currentUserId: String? = null
 
     fun login(loginId: String, password: String): UserProfile {
         val email = if ('@' in loginId) loginId.trim() else "${loginId.trim().lowercase()}@leitedia.local"
@@ -66,22 +117,72 @@ class SupabaseClient {
             role = item.getString("role"),
             active = item.optBoolean("active", true)
         )
-            .also { if (!it.active) { accessToken = null; error("Usuário desativado. Procure a administração.") } }
+            .also {
+                if (!it.active) { accessToken = null; error("Usuário desativado. Procure a administração.") }
+                cooperativeId = it.cooperativeId
+                currentUserId = it.id
+            }
     }
 
     fun saveMilkEntry(profile: UserProfile, input: MilkEntryInput) {
         val body = JSONObject()
             .put("cooperative_id", profile.cooperativeId)
             .put("user_id", profile.id)
-            .put("entry_date", LocalDate.now().toString())
-            .put("entry_time", LocalTime.now().withNano(0).toString())
+            .put("entry_date", input.entryDate)
+            .put("entry_time", input.entryTime)
+            .put("client_entry_id", input.clientEntryId)
+            .put("producer_id", input.producerId)
             .put("supplier", input.supplier)
             .put("shift", input.shift)
             .put("liters", input.liters)
             .put("notes", input.notes.ifBlank { JSONObject.NULL })
-        body.put("temperature", input.temperature ?: JSONObject.NULL)
-        body.put("fat_percentage", input.fatPercentage ?: JSONObject.NULL)
-        request("/rest/v1/milk_entries", "POST", body)
+        request("/rest/v1/milk_entries?on_conflict=user_id,client_entry_id", "POST", body, prefer = "resolution=ignore-duplicates,return=minimal")
+    }
+
+    fun hasMilkEntry(profile: UserProfile, input: MilkEntryInput): Boolean {
+        val shift = java.net.URLEncoder.encode(input.shift, "UTF-8")
+        val result = requestArray(
+            "/rest/v1/milk_entries?select=id&user_id=eq.${profile.id}&producer_id=eq.${input.producerId}" +
+                "&entry_date=eq.${input.entryDate}&shift=eq.$shift&limit=1"
+        )
+        return result.length() > 0
+    }
+
+    fun listProducers(activeOnly: Boolean = false): List<Producer> {
+        val filter = if (activeOnly) "&active=eq.true" else ""
+        val result = requestArray("/rest/v1/producers?select=id,name,document,phone,community,active$filter&order=name.asc")
+        return (0 until result.length()).map { index ->
+            val item = result.getJSONObject(index)
+            Producer(
+                id = item.getLong("id"),
+                name = item.getString("name"),
+                document = if (item.isNull("document")) "" else item.getString("document"),
+                phone = if (item.isNull("phone")) "" else item.getString("phone"),
+                community = if (item.isNull("community")) "" else item.getString("community"),
+                active = item.optBoolean("active", true)
+            )
+        }
+    }
+
+    fun createProducer(name: String, document: String, phone: String, community: String) {
+        val cooperative = cooperativeId ?: error("Sessão expirada")
+        val userId = currentUserId ?: error("Sessão expirada")
+        request("/rest/v1/producers", "POST", JSONObject()
+            .put("cooperative_id", cooperative)
+            .put("user_id", userId)
+            .put("name", name.trim())
+            .put("document", document.trim().ifBlank { JSONObject.NULL })
+            .put("phone", phone.trim().ifBlank { JSONObject.NULL })
+            .put("community", community.trim().ifBlank { JSONObject.NULL }))
+    }
+
+    fun updateProducer(id: Long, name: String, document: String, phone: String, community: String, active: Boolean) {
+        request("/rest/v1/producers?id=eq.$id", "PATCH", JSONObject()
+            .put("name", name.trim())
+            .put("document", document.trim().ifBlank { JSONObject.NULL })
+            .put("phone", phone.trim().ifBlank { JSONObject.NULL })
+            .put("community", community.trim().ifBlank { JSONObject.NULL })
+            .put("active", active))
     }
 
     fun listUsers(): List<UserProfile> {
@@ -103,6 +204,17 @@ class SupabaseClient {
         val result = requestArray(
             "/rest/v1/milk_entries?user_id=eq.$userId&select=id,entry_date,supplier,shift,liters,temperature,fat_percentage,notes&order=entry_date.desc"
         )
+        return parseEntries(result)
+    }
+
+    fun listCooperativeEntries(): List<MilkEntry> {
+        val result = requestArray(
+            "/rest/v1/milk_entries?select=id,entry_date,supplier,shift,liters,temperature,fat_percentage,notes&order=entry_date.desc&limit=5000"
+        )
+        return parseEntries(result)
+    }
+
+    private fun parseEntries(result: JSONArray): List<MilkEntry> {
         return (0 until result.length()).map { index ->
             val item = result.getJSONObject(index)
             MilkEntry(
@@ -118,6 +230,72 @@ class SupabaseClient {
         }
     }
 
+    fun updateMilkEntry(entryId: Long, liters: Double, shift: String, notes: String) {
+        request("/rest/v1/milk_entries?id=eq.$entryId", "PATCH", JSONObject()
+            .put("liters", liters)
+            .put("shift", shift)
+            .put("notes", notes.trim().ifBlank { JSONObject.NULL }))
+    }
+
+    fun listAudit(userId: String): List<AuditRecord> {
+        val result = requestArray(
+            "/rest/v1/milk_entry_audit?user_id=eq.$userId&select=id,milk_entry_id,changed_by,old_liters,new_liters,old_shift,new_shift,old_notes,new_notes,changed_at&order=changed_at.desc&limit=500"
+        )
+        return (0 until result.length()).map { index ->
+            val item = result.getJSONObject(index)
+            AuditRecord(
+                id = item.getLong("id"), entryId = item.getLong("milk_entry_id"),
+                changedBy = item.optString("changed_by", ""),
+                oldLiters = item.optDoubleOrNull("old_liters"), newLiters = item.optDoubleOrNull("new_liters"),
+                oldShift = item.optNullableString("old_shift"), newShift = item.optNullableString("new_shift"),
+                oldNotes = item.optNullableString("old_notes"), newNotes = item.optNullableString("new_notes"),
+                changedAt = item.getString("changed_at")
+            )
+        }
+    }
+
+    fun listClosedPeriods(): List<ClosedPeriod> {
+        val result = requestArray("/rest/v1/closed_periods?select=id,start_date,end_date,reason,closed_at,reopened_at&order=closed_at.desc&limit=100")
+        return (0 until result.length()).map { index ->
+            val item = result.getJSONObject(index)
+            ClosedPeriod(item.getLong("id"), item.getString("start_date"), item.getString("end_date"),
+                item.optNullableString("reason"), item.getString("closed_at"), item.optNullableString("reopened_at").ifBlank { null })
+        }
+    }
+
+    fun closePeriod(start: String, end: String, reason: String) {
+        val cooperative = cooperativeId ?: error("Sessão expirada")
+        val actor = currentUserId ?: error("Sessão expirada")
+        request("/rest/v1/closed_periods", "POST", JSONObject()
+            .put("cooperative_id", cooperative).put("start_date", start).put("end_date", end)
+            .put("reason", reason.ifBlank { JSONObject.NULL }).put("closed_by", actor))
+    }
+
+    fun reopenPeriod(id: Long) {
+        val actor = currentUserId ?: error("Sessão expirada")
+        request("/rest/v1/closed_periods?id=eq.$id", "PATCH", JSONObject()
+            .put("reopened_at", java.time.Instant.now().toString()).put("reopened_by", actor))
+    }
+
+    fun listBackups(userId: String): List<DataBackup> {
+        val result = requestArray("/rest/v1/data_backups?owner_user_id=eq.$userId&select=id,owner_user_id,label,created_at,restored_at&order=created_at.desc&limit=30")
+        return (0 until result.length()).map { index ->
+            val item = result.getJSONObject(index)
+            DataBackup(item.getString("id"), item.getString("owner_user_id"), item.optNullableString("label"),
+                item.getString("created_at"), item.optNullableString("restored_at").ifBlank { null })
+        }
+    }
+
+    fun createBackup(userId: String, label: String): String = request(
+        "/rest/v1/rpc/create_data_backup", "POST",
+        JSONObject().put("target_user_id", userId).put("backup_label", label.ifBlank { JSONObject.NULL })
+    ).getString("id")
+
+    fun restoreBackup(id: String): String {
+        val result = request("/rest/v1/rpc/restore_data_backup", "POST", JSONObject().put("backup_id", id))
+        return "${result.optInt("producers_restored", 0)} produtor(es) e ${result.optInt("entries_restored", 0)} lançamento(s) restaurados."
+    }
+
     fun createUser(loginId: String, fullName: String, password: String) {
         request(
             path = "/functions/v1/create-cooperative-user",
@@ -127,6 +305,20 @@ class SupabaseClient {
                 .put("full_name", fullName.trim())
                 .put("password", password)
                 .put("action", "create")
+        )
+    }
+
+    fun getLicenseStatus(): LicenseStatus {
+        val result = request(
+            path = "/functions/v1/create-cooperative-user",
+            method = "POST",
+            body = JSONObject().put("action", "license-status")
+        )
+        return LicenseStatus(
+            status = result.optString("status", "trial"),
+            trialEndsAt = result.optString("trial_ends_at"),
+            daysRemaining = result.optInt("days_remaining", 0),
+            active = result.optBoolean("active", false)
         )
     }
 
@@ -141,8 +333,14 @@ class SupabaseClient {
         request("/functions/v1/create-cooperative-user", "POST", body)
     }
 
+    fun changeOwnPassword(newPassword: String) {
+        request("/auth/v1/user", "PUT", JSONObject().put("password", newPassword))
+    }
+
     fun logout() {
         accessToken = null
+        cooperativeId = null
+        currentUserId = null
     }
 
     private fun requestArray(path: String): JSONArray {
@@ -154,15 +352,16 @@ class SupabaseClient {
         path: String,
         method: String,
         body: JSONObject? = null,
-        authenticated: Boolean = true
+        authenticated: Boolean = true,
+        prefer: String? = null
     ): JSONObject {
-        val connection = open(path, method, authenticated)
+        val connection = open(path, method, authenticated, prefer)
         if (body != null) connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
         val text = readResponse(connection)
         return if (text.isBlank()) JSONObject() else JSONObject(text)
     }
 
-    private fun open(path: String, method: String, authenticated: Boolean): HttpURLConnection {
+    private fun open(path: String, method: String, authenticated: Boolean, prefer: String? = null): HttpURLConnection {
         return (URL(baseUrl + path).openConnection() as HttpURLConnection).apply {
             requestMethod = method
             connectTimeout = 15_000
@@ -170,6 +369,7 @@ class SupabaseClient {
             setRequestProperty("apikey", apiKey)
             setRequestProperty("Content-Type", "application/json")
             setRequestProperty("Accept", "application/json")
+            if (prefer != null) setRequestProperty("Prefer", prefer)
             if (authenticated) {
                 val token = accessToken ?: error("Sessão expirada")
                 setRequestProperty("Authorization", "Bearer $token")
@@ -192,3 +392,6 @@ class SupabaseClient {
         return text
     }
 }
+
+private fun JSONObject.optNullableString(key: String): String = if (isNull(key)) "" else optString(key, "")
+private fun JSONObject.optDoubleOrNull(key: String): Double? = if (isNull(key) || !has(key)) null else optDouble(key)
